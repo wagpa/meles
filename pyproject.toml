@@ -1,6 +1,33 @@
 [project]
 name = "meles"
 version = "0.1.0"
-description = "Add your description here"
+description = "Reversing video anonymization via aggregation attacks"
+readme = "README.md"
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "numpy",
+    "opencv-python",
+    "torch",
+    "torchvision",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "jupyterlab",
+    "ipykernel",
+    "nbstripout",
+    "ty>=0.0.53",
+    "ruff>=0.15.19",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/meles"]
+include = ["src/meles/py.typed"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
