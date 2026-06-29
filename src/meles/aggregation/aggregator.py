@@ -1,21 +1,15 @@
-from abc import abstractmethod
-from typing import TypeAlias
-
-# The input type used by the aggregator. It is a list of embeddings.
-AggregationInput: TypeAlias = torch.Tensor
-
-# The output type used by the aggregator. It is a single embedding or alist.
-AggregationOutput: TypeAlias = torch.Tensor
+from abc import abstractmethod, ABC
+from meles.common import Embeddings
 
 
-class Aggregator:
+class Aggregator(ABC):
     """
     The abstract class for aggregators. It aggregates a list of embeddings into a single embedding. In general, only the
     NoAggregator class should return a list of embeddings (baseline). The aggregated embedding still keeps the dimension.
     """
 
     @abstractmethod
-    def __call__(self, embeddings: AggregationInput) -> AggregationOutput:
+    def __call__(self, embeddings: Embeddings) -> Embeddings:
         """
         The abstract class for aggregators. It aggregates a list of embeddings into a single embedding.
         :param embeddings: The list of embeddings to pool with shape (num_frames, dim)
@@ -30,7 +24,7 @@ class NoAggregator(Aggregator):
     the experiment baseline.
     """
 
-    def __call__(self, embeddings: AggregationInput) -> AggregationOutput:
+    def __call__(self, embeddings: Embeddings) -> Embeddings:
         """
         Returns the embeddings as is.
         :param embeddings: The list of embeddings to pool with shape (num_frames, dim)

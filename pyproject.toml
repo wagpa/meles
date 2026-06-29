@@ -5,8 +5,10 @@ description = "Reversing video anonymization via aggregation attacks"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "insightface>=1.0.1",
     "numpy",
     "opencv-python",
+    "scikit-learn>=1.9.0",
     "torch",
     "torchvision",
 ]
