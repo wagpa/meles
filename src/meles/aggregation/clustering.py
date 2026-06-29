@@ -1,5 +1,7 @@
-import torch
+import numpy as np
 from meles.aggregation.aggregator import Aggregator, Embeddings
+from meles.common import Frames
+from meles.recognizer.recognizer import Recognizer
 
 
 class ClusteringAggregator(Aggregator):
@@ -7,6 +9,6 @@ class ClusteringAggregator(Aggregator):
     The ClusteringAggregator pools all embeddings into a single embedding while discarding outliers based on clustering.
     """
 
-    def __call__(self, embeddings: Embeddings) -> Embeddings:
-        # TODO: implement me!
-        return torch.mean(embeddings, dim=0, keepdim=True)
+    def aggregate(self, frames: Frames, recognizer: Recognizer) -> Embeddings:
+        embeddings = recognizer.embed(frames)
+        return np.mean(embeddings, axis=0, keepdims=True).tolist()

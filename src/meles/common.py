@@ -1,5 +1,7 @@
-from typing import TypeAlias
-import torch
+from typing import TypeAlias, Any, Sequence, List
 
-Frames: TypeAlias = torch.Tensor
-Embeddings: TypeAlias = torch.Tensor
+from numpy.typing import NDArray
+
+Frames: TypeAlias = Sequence[NDArray[Any]]
+
+Embeddings: TypeAlias = List[List[float]]

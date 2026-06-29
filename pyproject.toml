@@ -3,14 +3,11 @@ name = "meles"
 version = "0.1.0"
 description = "Reversing video anonymization via aggregation attacks"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 dependencies = [
-    "insightface>=1.0.1",
+    "deepface>=0.0.100",
     "numpy",
-    "opencv-python",
-    "scikit-learn>=1.9.0",
-    "torch",
-    "torchvision",
+    "scikit-learn>=1.9.0"
 ]
 
 [dependency-groups]
