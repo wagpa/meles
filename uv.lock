@@ -1241,6 +1241,7 @@ source = { editable = "." }
 dependencies = [
     { name = "deepface" },
     { name = "numpy" },
+    { name = "pandas" },
     { name = "scikit-learn" },
 ]
 
@@ -1258,6 +1259,7 @@ dev = [
 requires-dist = [
     { name = "deepface", specifier = ">=0.0.100" },
     { name = "numpy" },
+    { name = "pandas", specifier = ">=3.0.4" },
     { name = "scikit-learn", specifier = ">=1.9.0" },
 ]
 

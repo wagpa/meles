@@ -7,7 +7,8 @@ requires-python = ">=3.12"
 dependencies = [
     "deepface>=0.0.100",
     "numpy",
-    "scikit-learn>=1.9.0"
+    "pandas>=3.0.4",
+    "scikit-learn>=1.9.0",
 ]
 
 [dependency-groups]
