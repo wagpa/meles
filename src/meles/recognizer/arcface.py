@@ -5,6 +5,7 @@ from deepface import DeepFace
 class ArcFaceRecognizer(Recognizer):
     model_name: str = "ArcFace"
     detector_backend: str
+    enforce_detection: bool = False
 
     def __init__(self, detector_backend: str = "opencv"):
         self.detector_backend = detector_backend
@@ -17,5 +18,8 @@ class ArcFaceRecognizer(Recognizer):
             frames,
             model_name=self.model_name,
             detector_backend=self.detector_backend,
+            enforce_detection=self.enforce_detection,
         )
-        return [embedding["embedding"] for embedding in embeddings]
+        # TODO show warning in case multiple faces were detected?
+        # Use the fist face that was detected (skip if none were detected)
+        return [embedding[0]["embedding"] for embedding in embeddings if embedding.__len__() > 0]
