@@ -16,3 +16,6 @@ class QualityAggregator(Aggregator):
         # TODO: implement the weighting using some model. But how to get the quality? -> needs original frames?
         embeddings = self.recognizer.embed(frames)
         return np.mean(embeddings, axis=0, keepdims=True).tolist()
+
+    def name(self) -> str:
+        return "quality"

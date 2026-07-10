@@ -19,6 +19,10 @@ class Aggregator(Recognizer):
         return self.recognizer.metric()
 
     @abstractmethod
+    def name(self) -> str:
+        return "base"
+
+    @abstractmethod
     def embed(self, frames: Frames) -> Embeddings:
         return self.recognizer.embed(frames)
 
@@ -34,3 +38,6 @@ class NoAggregator(Aggregator):
 
     def embed(self, frames: Frames) -> Embeddings:
         return self.recognizer.embed(frames)
+
+    def name(self) -> str:
+        return "no"

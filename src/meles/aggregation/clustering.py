@@ -15,3 +15,6 @@ class ClusteringAggregator(Aggregator):
     def embed(self, frames: Frames) -> Embeddings:
         embeddings = self.recognizer.embed(frames)
         return np.mean(embeddings, axis=0, keepdims=True).tolist()
+
+    def name(self) -> str:
+        return "cluster"

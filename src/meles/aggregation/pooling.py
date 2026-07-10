@@ -16,6 +16,9 @@ class MeanPoolingAggregator(Aggregator):
         embeddings = self.recognizer.embed(frames)
         return np.mean(embeddings, axis=0, keepdims=True).tolist()
 
+    def name(self) -> str:
+        return "mean"
+
 
 class MaxPoolingAggregator(Aggregator):
     """
@@ -29,6 +32,9 @@ class MaxPoolingAggregator(Aggregator):
         embeddings = self.recognizer.embed(frames)
         return np.max(embeddings, axis=0, keepdims=True).tolist()
 
+    def name(self) -> str:
+        return "max"
+
 
 class MinPoolingAggregator(Aggregator):
     """
@@ -41,3 +47,6 @@ class MinPoolingAggregator(Aggregator):
     def embed(self, frames: Frames) -> Embeddings:
         embeddings = self.recognizer.embed(frames)
         return np.min(embeddings, axis=0, keepdims=True).tolist()
+
+    def name(self) -> str:
+        return "min"
