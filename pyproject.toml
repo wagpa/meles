@@ -12,6 +12,8 @@ dependencies = [
     "pandas>=3.0.4",
     "scikit-learn>=1.9.0",
     "seaborn>=0.13.2",
+    "snakemake>=9.23.1",
+    "snakevision>=1.1.0",
     "tf-keras>=2.21.0",
     "tqdm>=4.68.3",
 ]

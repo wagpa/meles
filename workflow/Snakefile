@@ -1,0 +1,94 @@
+from pathlib import Path
+
+configfile: "workflow/config.yaml"
+
+input_dataset = Path(config["input_dataset"])
+
+results_dir = Path(config["results_directory"])
+
+anonymized_pattern = results_dir / "anonymize/{anon_method}/json-tsv-yaddayadday"
+embedding_pattern = results_dir / "embedding/{anon_method}/{embedding_model}/embeddings.safetensor.h5.npz.json.tsv"
+k_fold_pattern = results_dir / "k_fold/{anon_method}/{embedding_model}/split-{k}.tsv"
+aggregated_train_pattern = results_dir / "aggregation/{anon_method}/{embedding_model}/{aggregation_method}/split-{k}-train.tsv"
+aggregated_test_pattern = results_dir / "aggregation/{anon_method}/{embedding_model}/{aggregation_method}/split-{k}-test.tsv"
+
+score_pattern = results_dir / "scoring/{anon_method}/{embedding_model}/{aggregation_method}/scores.tsv"
+
+anon_methods = [
+    "method_A",
+    "method_B"
+]
+
+embedding_models = [
+    "model_1",
+    "model_2",
+    "model_3"
+]
+
+aggregation_methods = [
+    "method_X",
+    "method_Y",
+    "method_Z"
+]
+
+k = 3 # k folds
+
+
+rule anonymize:
+    input:
+        input_dataset
+    output:
+        anonymized_pattern
+    threads: 1
+    script:
+        "scripts/anonymize.py" # "script/that/anonymized/images/lololo/and/produces/a/json/of/paths/to/anon/images"
+
+rule embed_images:
+    input:
+        anonymized_pattern
+    output:
+        embedding_pattern
+    threads: 4
+    script:
+        "scripts/embedding.py" # "script/that/takes/a/json/of/filepaths/and/produces/a/combined/dataset/of/embeddings"
+
+rule test_train_split:
+    input:
+        embedding_pattern
+    output:
+        expand(k_fold_pattern, k=range(k), allow_missing=True)
+    params:
+        k=k
+    script:
+        "scripts/k_fold_splitting.py" # "script/that/creates/k/splits/and/adds/a/column/whether/we/are/test/or/split"
+
+rule aggregate:
+    input:
+        k_fold_pattern
+    output:
+        aggregated_train_pattern,
+        aggregated_test_pattern,
+    script:
+        "scripts/aggregation.py" # "script/that/aggregates/separates/train/and/test/and/aggregates/them/separately"
+
+rule score:
+    input:
+        train_sets = expand(aggregated_train_pattern, k=range(k), allow_missing=True),
+        test_sets = expand(aggregated_test_pattern, k=range(k), allow_missing=True)
+    output:
+        score_pattern
+    script:
+        "scripts/score.py" # "script/that/for/each/k/grabs/the/test/samples/and/predicts/the/identities/agains/the/respective/train/latent/space/and/after/doing/this/for/all/the/samples/across/all/c/computes/a/single/accuracy/score"
+
+
+rule all:
+    default_target: True
+    input:
+        expand(
+            score_pattern,
+            anon_method=anon_methods,
+            embedding_model=embedding_models,
+            aggregation_method=aggregation_methods
+        )
+
+# uv run snakemake --dag | dot -Tsvg > dag.svg
