@@ -1,2 +1,25 @@
-input_dataset: README.md
+# The structure file describing the dataset. It is a Pandas dataframe with one entry per (clear) video frame for each
+# identity and video. The frames are referenced by their (relative) path. It has at least the following columns:
+# - identity: the identity of the person in the video
+# - video: the name of the video
+# - frame: the name of the frame
+# - path: the path to the frame image relative to the structure file
+input_dataset: data/ytfaces.tsv
+
+# The directory where the results will be saved.
 results_directory: results
+
+# The number of folds for the k-fold cross-validation.
+k_folds: 3
+
+# The anonymization methods (with implicit parametrization) to be tested.
+anonymization_methods:
+- none
+
+# The embedding models (with implicit parametrization) to be tested.
+embedding_methods:
+- arcface
+
+# The aggregation methods (with implicit parametrization) to be tested.
+aggregation_methods:
+- none

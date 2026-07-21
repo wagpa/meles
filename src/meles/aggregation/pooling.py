@@ -9,15 +9,11 @@ class MeanPoolingAggregator(Aggregator):
     The MeanPoolingAggregator pools all embeddings into a single embedding using the column wise mean.
     """
 
-    def __init__(self, recognizer: Recognizer):
-        super().__init__(recognizer)
+    def __init__(self):
+        super().__init__()
 
-    def embed(self, frames: Frames) -> Embeddings:
-        embeddings = self.recognizer.embed(frames)
+    def aggregate(self, embeddings: Embeddings) -> Embeddings:
         return np.mean(embeddings, axis=0, keepdims=True).tolist()
-
-    def name(self) -> str:
-        return "mean"
 
 
 class MedianPoolingAggregator(Aggregator):

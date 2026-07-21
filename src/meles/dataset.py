@@ -93,3 +93,39 @@ def split_dataset(
     # are guaranteed to be present in the train set as well.
     assert set(test["identity"]).issubset(set(train["identity"]))
     return train, test
+
+
+def k_fold_splits(
+        df: pd.DataFrame,
+        k: int,
+        identity_col: str = "identity",
+        video_col: str = "video",
+        shuffle: bool = False,
+        random_state: int | None = 0,
+) -> list[pd.DataFrame]:
+    """k copies of df, each with a bool `train` column. Splits happen per-identity
+    at video granularity: every video stays whole, every identity appears in
+    both train and test of every fold."""
+
+    # 1. one row per (identity, video)
+    videos = df[[identity_col, video_col]].drop_duplicates()
+
+    # 2. guard the edge case: an identity with < k videos can't reach every fold
+    counts = videos.groupby(identity_col).size()
+    if (counts < k).any():
+        bad = counts[counts < k].to_dict()
+        raise ValueError(f"identities with fewer than k={k} videos: {bad}")
+
+    # 3. assign each video a fold index within its identity (round-robin)
+    if shuffle:
+        videos = videos.sample(frac=1, random_state=random_state)
+    videos["_fold"] = videos.groupby(identity_col).cumcount() % k
+
+    # 4. propagate the fold index to every frame
+    df = df.merge(videos, on=[identity_col, video_col], how="left")
+
+    # 5. fold i is the test fold; everything else is train
+    return [
+        df.drop(columns="_fold").assign(train=(df["_fold"] != i))
+        for i in range(k)
+    ]

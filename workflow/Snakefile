@@ -2,56 +2,54 @@ from pathlib import Path
 
 configfile: "workflow/config.yaml"
 
+# The dynamic configuration as provided by the configuration file.
 input_dataset = Path(config["input_dataset"])
-
 results_dir = Path(config["results_directory"])
+anonymization_methods = config["anonymization_methods"]
+embedding_methods = config["embedding_methods"]
+aggregation_methods = config["aggregation_methods"]
+k = int(config["k_folds"])
 
-anonymized_pattern = results_dir / "anonymize/{anon_method}/json-tsv-yaddayadday"
-embedding_pattern = results_dir / "embedding/{anon_method}/{embedding_model}/embeddings.safetensor.h5.npz.json.tsv"
-k_fold_pattern = results_dir / "k_fold/{anon_method}/{embedding_model}/split-{k}.tsv"
-aggregated_train_pattern = results_dir / "aggregation/{anon_method}/{embedding_model}/{aggregation_method}/split-{k}-train.tsv"
-aggregated_test_pattern = results_dir / "aggregation/{anon_method}/{embedding_model}/{aggregation_method}/split-{k}-test.tsv"
-
-score_pattern = results_dir / "scoring/{anon_method}/{embedding_model}/{aggregation_method}/scores.tsv"
-
-anon_methods = [
-    "method_A",
-    "method_B"
-]
-
-embedding_models = [
-    "model_1",
-    "model_2",
-    "model_3"
-]
-
-aggregation_methods = [
-    "method_X",
-    "method_Y",
-    "method_Z"
-]
-
-k = 3 # k folds
+# The file path patterns for the snakemake rules.
+anonymized_pattern = results_dir / "anonymize/{anonymization_method}/structure.tsv"
+embedding_pattern = results_dir / "embedding/{anonymization_method}/{embedding_method}/embeddings.tsv"
+k_fold_pattern = results_dir / "k_fold/{anonymization_method}/{embedding_method}/split-{k}.tsv"
+aggregated_train_pattern = results_dir / "aggregation/{anonymization_method}/{embedding_method}/{aggregation_method}/split-{k}-train.tsv"
+aggregated_test_pattern = results_dir / "aggregation/{anonymization_method}/{embedding_method}/{aggregation_method}/split-{k}-test.tsv"
+score_pattern = results_dir / "scoring/{anonymization_method}/{embedding_method}/{aggregation_method}/scores.tsv"
 
 
+# The anonymization rule applies parametrized anonymization to the input frames. It takes a structure file as input, applying
+# the anonymization to each listed frame and stores them in another directory. The result is a new structure file with the
+# new paths.
 rule anonymize:
     input:
         input_dataset
     output:
         anonymized_pattern
     threads: 1
-    script:
-        "scripts/anonymize.py" # "script/that/anonymized/images/lololo/and/produces/a/json/of/paths/to/anon/images"
+    shell:
+        "python workflow/scripts/anonymize.py "
+        "--input {input:q} "
+        "--output {output:q} "
+        "--method {wildcards.anonymization_method}"
 
-rule embed_images:
+# The embed rule embeds each frame based on a parametrized method. It attaches the colum "embedding" to the dataset rows.
+rule embed:
     input:
         anonymized_pattern
     output:
         embedding_pattern
     threads: 4
-    script:
-        "scripts/embedding.py" # "script/that/takes/a/json/of/filepaths/and/produces/a/combined/dataset/of/embeddings"
+    shell:
+        "python workflow/scripts/embedding.py "
+        "--input {input:q} "
+        "--output {output:q} "
+        "--method {wildcards.embedding_method}"
 
+# The train-test-split rule splits the dataset using k-fold cross-validation. It attaches the column "train" to the dataset
+# where 'True' assigns a frame to the trainset. The output consists of multiple files, one for each k-fold with the described
+# assignments.
 rule test_train_split:
     input:
         embedding_pattern
@@ -59,18 +57,28 @@ rule test_train_split:
         expand(k_fold_pattern, k=range(k), allow_missing=True)
     params:
         k=k
-    script:
-        "scripts/k_fold_splitting.py" # "script/that/creates/k/splits/and/adds/a/column/whether/we/are/test/or/split"
+    shell:
+        "python workflow/scripts/k_fold_splitting.py "
+        "--input {input:q} "
+        "--outputs {output:q} "
 
+# The aggregate rule aggregates the embeddings based on a parametrized method. The train output consists of one or more
+# embeddings for each identity (drops video and frame level columns), the test output has one for each video (drops frame
+# level columns).
 rule aggregate:
     input:
         k_fold_pattern
     output:
         aggregated_train_pattern,
         aggregated_test_pattern,
-    script:
-        "scripts/aggregation.py" # "script/that/aggregates/separates/train/and/test/and/aggregates/them/separately"
+    shell:
+        "python workflow/scripts/aggregate.py "
+        "--input {input:q} "
+        "--train-output {aggregated_train_pattern:q} "
+        "--test-output {aggregated_test_pattern:q} "
+        "--method {wildcards.aggregation_method}"
 
+# The score rule scores the train and test datasets for each k-fold. The output dataframe consists of multiple metrics.
 rule score:
     input:
         train_sets = expand(aggregated_train_pattern, k=range(k), allow_missing=True),
@@ -81,14 +89,18 @@ rule score:
         "scripts/score.py" # "script/that/for/each/k/grabs/the/test/samples/and/predicts/the/identities/agains/the/respective/train/latent/space/and/after/doing/this/for/all/the/samples/across/all/c/computes/a/single/accuracy/score"
 
 
+# This rule triggers the experiment for all combinations.
 rule all:
     default_target: True
     input:
         expand(
-            score_pattern,
-            anon_method=anon_methods,
-            embedding_model=embedding_models,
-            aggregation_method=aggregation_methods
+            embedding_pattern,
+            anonymization_method=anonymization_methods,
+            embedding_method=embedding_methods,
         )
-
-# uv run snakemake --dag | dot -Tsvg > dag.svg
+        #expand(
+        #    score_pattern,
+        #    anonymization_method=anonymization_methods,
+        #    embedding_method=embedding_methods,
+        #    aggregation_method=aggregation_methods
+        #)

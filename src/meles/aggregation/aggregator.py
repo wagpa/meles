@@ -1,30 +1,19 @@
-from abc import abstractmethod
-from meles.common import Embeddings, Frames
-from meles.recognizer.recognizer import Recognizer
+from abc import abstractmethod, ABC
+from meles.common import Embeddings
 
 
-class Aggregator(Recognizer):
+class Aggregator(ABC):
     """
     The abstract class for an aggregator. It uses the internal recognizer to embed frames and then aggregates the embeddings.
     By default, the aggregator does not aggregate the embeddings. It simply returns the embeddings as is. This will be used as
     the experiment baseline.
     """
-
-    recognizer: Recognizer
-
-    def __init__(self, recognizer: Recognizer):
-        self.recognizer = recognizer
-
-    def metric(self) -> str:
-        return self.recognizer.metric()
+    def __init__(self):
+        pass
 
     @abstractmethod
-    def name(self) -> str:
-        return "base"
-
-    @abstractmethod
-    def embed(self, frames: Frames) -> Embeddings:
-        return self.recognizer.embed(frames)
+    def aggregate(self, embeddings: Embeddings) -> Embeddings:
+        return embeddings
 
 
 class NoAggregator(Aggregator):
@@ -33,11 +22,5 @@ class NoAggregator(Aggregator):
     the experiment baseline.
     """
 
-    def __init__(self, recognizer: Recognizer):
-        super().__init__(recognizer)
-
-    def embed(self, frames: Frames) -> Embeddings:
-        return self.recognizer.embed(frames)
-
-    def name(self) -> str:
-        return "no"
+    def aggregate(self, embeddings: Embeddings) -> Embeddings:
+        return embeddings
