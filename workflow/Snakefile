@@ -60,7 +60,7 @@ rule test_train_split:
     shell:
         "python workflow/scripts/k_fold_splitting.py "
         "--input {input:q} "
-        "--outputs {output:q} "
+        "{output:q} "
 
 # The aggregate rule aggregates the embeddings based on a parametrized method. The train output consists of one or more
 # embeddings for each identity (drops video and frame level columns), the test output has one for each video (drops frame
@@ -94,9 +94,10 @@ rule all:
     default_target: True
     input:
         expand(
-            embedding_pattern,
+            aggregated_train_pattern,
             anonymization_method=anonymization_methods,
             embedding_method=embedding_methods,
+            k=range(k),
         )
         #expand(
         #    score_pattern,
