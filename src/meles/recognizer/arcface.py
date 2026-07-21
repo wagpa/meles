@@ -1,4 +1,5 @@
 from deepface import DeepFace
+from tqdm.auto import tqdm
 
 from meles.common import Frames, Embeddings
 from meles.recognizer.recognizer import Recognizer
@@ -19,11 +20,23 @@ class ArcFaceRecognizer(Recognizer):
         return "cosine"
 
     def embed(self, frames: Frames) -> Embeddings:
-        representations = DeepFace.represent(
+        # Embed one frame at a time so progress is observable. tqdm writes to
+        # stderr, which Snakemake captures in the per-job log, giving live
+        # feedback on long embedding runs. `unit="frame"` and the description
+        # make the bar self-explanatory in the log output.
+        embeddings: Embeddings = []
+        for frame in tqdm(
             frames,
-            model_name=self.model_name,
-            detector_backend=self.detector_backend,
-            enforce_detection=self.enforce_detection,
-        )
-        # noinspection PyTypeChecker
-        return [faces[0]["embedding"] for faces in representations]
+            total=len(frames),
+            desc=f"Embedding ({self.model_name})",
+            unit="frame",
+        ):
+            faces = DeepFace.represent(
+                frame,
+                model_name=self.model_name,
+                detector_backend=self.detector_backend,
+                enforce_detection=self.enforce_detection,
+            )
+            # noinspection PyTypeChecker
+            embeddings.append(faces[0]["embedding"] if faces else None)
+        return embeddings
