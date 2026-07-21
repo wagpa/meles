@@ -38,7 +38,7 @@ def main(input_path: Path, train_output_path: Path, test_output_path: Path, meth
 
     # Aggregate the train embeddings per identity (multiple videos)
     train_embeddings = (
-        train_structure.groupby(['identity'])['embeddings']
+        train_structure.groupby(['identity'])['embedding']
         .apply(lambda embeddings: agg.aggregate(embeddings.to_list()))
         .explode()
         .rename('embedding')
@@ -48,7 +48,7 @@ def main(input_path: Path, train_output_path: Path, test_output_path: Path, meth
 
     # Aggregate the test embeddings per identity-video (one video)
     test_embeddings = (
-        test_structure.groupby(['identity', 'video'])['embeddings']
+        test_structure.groupby(['identity', 'video'])['embedding']
         .apply(lambda embeddings: agg.aggregate(embeddings.to_list()))
         .explode()
         .rename('embedding')

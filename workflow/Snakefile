@@ -69,13 +69,13 @@ rule aggregate:
     input:
         k_fold_pattern
     output:
-        aggregated_train_pattern,
-        aggregated_test_pattern,
+        train = aggregated_train_pattern,
+        test = aggregated_test_pattern,
     shell:
         "python workflow/scripts/aggregate.py "
         "--input {input:q} "
-        "--train-output {aggregated_train_pattern:q} "
-        "--test-output {aggregated_test_pattern:q} "
+        "--train-output {output.train:q} "
+        "--test-output {output.test:q} "
         "--method {wildcards.aggregation_method}"
 
 # The score rule scores the train and test datasets for each k-fold. The output dataframe consists of multiple metrics.
@@ -97,6 +97,7 @@ rule all:
             aggregated_train_pattern,
             anonymization_method=anonymization_methods,
             embedding_method=embedding_methods,
+            aggregation_method=aggregation_methods,
             k=range(k),
         )
         #expand(
