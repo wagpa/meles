@@ -18,7 +18,7 @@ def main(input_path: Path, output_path: Path, method: str) -> None:
 
     # Read the input file
     logger.debug("Reading input file")
-    structure = pd.read_csv(input_path, sep="\t")
+    structure = pd.read_parquet(input_path)
 
     # Embed each frame
     logger.debug("Applying anonymization %(method)", { method })
@@ -29,7 +29,7 @@ def main(input_path: Path, output_path: Path, method: str) -> None:
             structure["path"] = structure["path"].transform(lambda path: str(Path(os.path.relpath(input_path.parent / path, output_path.parent))))
         case _:
             raise ValueError(f"Unknown anonymization method: {method}")
-    structure.to_csv(output_path, sep="\t", index=False)
+    structure.to_parquet(output_path, index=False)
 
 if __name__ == "__main__":
     main()

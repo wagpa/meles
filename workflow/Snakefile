@@ -92,6 +92,7 @@ rule score:
         "python workflow/scripts/score.py "
         "{params.train_args} "
         "{params.test_args} "
+        "--method {wildcards.aggregation_method} "
         "--output {output:q}"
 
 

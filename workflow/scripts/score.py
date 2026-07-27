@@ -28,12 +28,10 @@ from pathlib import Path
 import click
 import numpy as np
 import pandas as pd
-from sklearn.metrics import (
-    accuracy_score,
-    label_ranking_average_precision_score,
-    top_k_accuracy_score,
-)
+from sklearn.metrics import accuracy_score
 from tqdm.auto import tqdm
+
+from meles.classifier import Classifier
 
 logger = logging.getLogger(__name__)
 
@@ -64,8 +62,8 @@ def load_embeddings(path: Path) -> tuple[np.ndarray, np.ndarray]:
     logger.debug("Reading embeddings from %s", path)
     blocks: list[np.ndarray] = []
     identities: list[np.ndarray] = []
-    reader = pd.read_csv(
-        path, sep="\t", usecols=["identity", "embedding"], chunksize=READ_CHUNK_ROWS
+    reader = pd.read_parquet(
+        path, usecols=["identity", "embedding"], chunksize=READ_CHUNK_ROWS
     )
     for frame in reader:
         blocks.append(np.vstack([parse_embedding(e) for e in frame["embedding"]]))
@@ -79,95 +77,30 @@ def _l2_normalize(matrix: np.ndarray) -> np.ndarray:
 
 
 def score_fold(
-    gallery: np.ndarray,
-    gallery_ids: np.ndarray,
-    query: np.ndarray,
-    query_ids: np.ndarray,
+    train_structure: pd.DataFrame,
+    test_structure: pd.DataFrame,
     ranks: tuple[int, ...] = RANKS,
-    chunk_size: int = 1024,
 ) -> dict[str, float]:
     """Compute re-identification metrics for a single fold.
 
-    gallery/query are (N, D) embedding matrices; *_ids are the matching
-    identity labels. Similarity is cosine, so both sides are L2-normalized and
-    scored by dot product.
+    Train and test structures with embeddings. Similarity is cosine,
+    so both sides are L2-normalized and scored by dot product.
     """
-    gallery = _l2_normalize(gallery)
-    query = _l2_normalize(query)
 
-    # Group the gallery by identity so the per-identity best similarity is a
-    # single segmented maximum over contiguous columns.
-    grouped = np.argsort(gallery_ids, kind="stable")
-    gallery = gallery[grouped]
-    gallery_ids = gallery_ids[grouped]
-    identities, identity_starts = np.unique(gallery_ids, return_index=True)
+    X_train = np.vstack(train_structure["embedding"].to_numpy())
+    y_train = train_structure["identity"].to_numpy()
+    X_test = np.vstack(test_structure["embedding"].to_numpy())
+    y_test = test_structure["identity"].to_numpy()
 
-    n_queries = len(query_ids)
-    rank_hits = dict.fromkeys(ranks, 0)
-    top1_hits = 0
-    average_precision_sum = 0.0
-    scored_queries = 0
+    classifier = Classifier(metric="cosine")
+    classifier.fit(X_train, y_train)
 
-    for start in tqdm(range(0, n_queries, chunk_size), desc="Scoring queries"):
-        stop = min(start + chunk_size, n_queries)
-        chunk_ids = query_ids[start:stop]
+    # Top-1 accuracy: the closest neighbour's identity is the predicted identity.
+    neighbor_labels, _ = classifier.classify(X_test, n_neighbors=max(RANKS))
+    y_pred = neighbor_labels[:, 0]
+    accuracy = accuracy_score(y_test, y_pred)
 
-        # (chunk, G) cosine similarities against every gallery embedding.
-        similarities = query[start:stop] @ gallery.T
-        relevant = gallery_ids[None, :] == chunk_ids[:, None]  # (chunk, G) bool
-
-        # mAP over the gallery embeddings, skipping queries whose identity is
-        # absent from the gallery (undefined average precision).
-        has_relevant = relevant.any(axis=1)
-        if has_relevant.any():
-            average_precision_sum += label_ranking_average_precision_score(
-                relevant[has_relevant], similarities[has_relevant]
-            ) * int(has_relevant.sum())
-            scored_queries += int(has_relevant.sum())
-
-        # Collapse to (chunk, n_identities) by taking each identity's best
-        # matching embedding, which is the ranking the CMC curve is defined on.
-        identity_scores = np.maximum.reduceat(similarities, identity_starts, axis=1)
-        del similarities, relevant
-
-        top1_hits += accuracy_score(
-            chunk_ids, identities[identity_scores.argmax(axis=1)], normalize=False
-        )
-
-        # top_k_accuracy_score requires every true label to be a known class, so
-        # queries whose identity is missing from the gallery are counted as
-        # misses without being passed in.
-        known = np.isin(chunk_ids, identities)
-        for k in ranks:
-            # Rank-1 is the top-1 identity, i.e. the accuracy counted above.
-            if k == 1:
-                continue
-            if not known.any():
-                continue
-            if k >= len(identities):
-                rank_hits[k] += int(known.sum())
-                continue
-            rank_hits[k] += round(
-                top_k_accuracy_score(
-                    chunk_ids[known],
-                    identity_scores[known],
-                    k=k,
-                    labels=identities,
-                    normalize=False,
-                )
-            )
-
-    if 1 in rank_hits:
-        rank_hits[1] = top1_hits
-
-    metrics = {
-        "mAP": average_precision_sum / scored_queries if scored_queries else 0.0,
-        "accuracy": top1_hits / n_queries if n_queries else 0.0,
-    }
-    metrics.update(
-        {f"rank_{k}": rank_hits[k] / n_queries if n_queries else 0.0 for k in ranks}
-    )
-    return metrics
+    return { "accuracy": accuracy }
 
 
 @click.command()
@@ -188,18 +121,13 @@ def score_fold(
     help="Aggregated test (query) embeddings for one fold; repeat per fold.",
 )
 @click.option("--output", "output_path", required=True, type=click.Path(path_type=Path))
-@click.option(
-    "--chunk-size",
-    default=1024,
-    show_default=True,
-    type=click.IntRange(min=1),
-    help="Number of queries scored per similarity block; lower it to use less memory.",
-)
+@click.option("--method", required=True)
+
 def main(
     train_paths: tuple[Path, ...],
     test_paths: tuple[Path, ...],
     output_path: Path,
-    chunk_size: int,
+    method: str,
 ) -> None:
     if len(train_paths) != len(test_paths):
         raise click.BadParameter(
@@ -212,19 +140,17 @@ def main(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     rows = []
-    for fold, (train_path, test_path) in enumerate(zip(train_paths, test_paths)):
+    for fold, (train_path, test_path) in tqdm(enumerate(zip(train_paths, test_paths)), desc="Scoring folds"):
         logger.debug("Scoring fold %d", fold)
-        gallery, gallery_ids = load_embeddings(train_path)
-        query, query_ids = load_embeddings(test_path)
-        metrics = score_fold(
-            gallery, gallery_ids, query, query_ids, chunk_size=chunk_size
-        )
-        del gallery, gallery_ids, query, query_ids
+        train_structure = pd.read_parquet(train_path)
+        test_structure = pd.read_parquet(test_path)
+        metrics = score_fold(train_structure, test_structure)
+        del train_structure, test_structure
         rows.append({"k": fold, **metrics})
 
-    columns = ["k", "mAP", "accuracy", *[f"rank_{k}" for k in RANKS]]
+    columns = ["k", "accuracy"]
     scores = pd.DataFrame(rows, columns=columns)
-    scores.to_csv(output_path, sep="\t", index=False)
+    scores.to_parquet(output_path, index=False)
 
 
 if __name__ == "__main__":

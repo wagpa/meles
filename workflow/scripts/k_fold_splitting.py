@@ -22,13 +22,13 @@ def main(input_path: Path, output_paths: tuple[Path, ...]) -> None:
 
     # Read the input file
     logger.debug("Reading input file")
-    structure = pd.read_csv(input_path, sep="\t")
+    structure = pd.read_parquet(input_path)
 
     # Split into 'k' folds and save
     k = len(output_paths)
     logger.debug("Splitting into %d folds", k)
     for i, fold in enumerate(k_fold_splits(structure, k)):
-        fold.to_csv(output_paths[i], sep="\t", index=False)
+        fold.to_parquet(output_paths[i], index=False)
 
 if __name__ == "__main__":
     main()

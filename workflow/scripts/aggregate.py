@@ -22,7 +22,7 @@ def main(input_path: Path, train_output_path: Path, test_output_path: Path, meth
 
     # Run the anonymizer for each frame
     logger.debug("Reading input file")
-    structure = pd.read_csv(input_path, sep="\t")
+    structure = pd.read_parquet(input_path)
     train_structure = structure[structure["train"] == True]
     test_structure = structure[structure["train"] == False]
 
@@ -56,8 +56,8 @@ def main(input_path: Path, train_output_path: Path, test_output_path: Path, meth
         .dropna(subset=['embedding'])
     )
 
-    train_embeddings.to_csv(train_output_path, sep="\t", index=False)
-    test_embeddings.to_csv(test_output_path, sep="\t", index=False)
+    train_embeddings.to_parquet(train_output_path, index=False)
+    test_embeddings.to_parquet(test_output_path, index=False)
 
 if __name__ == "__main__":
     main()

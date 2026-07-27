@@ -23,7 +23,7 @@ def main(input_path: Path, output_path: Path, method: str) -> None:
 
     # Read the input file
     logger.debug("Reading input file")
-    structure = pd.read_csv(input_path, sep="\t")
+    structure = pd.read_parquet(input_path)
     paths = [str(input_path.parent / path) for path in structure["path"]]
 
     # Embed each frame
@@ -33,7 +33,7 @@ def main(input_path: Path, output_path: Path, method: str) -> None:
             structure["embedding"] = ArcFaceRecognizer().embed(paths)
         case _:
             raise ValueError(f"Unknown embedding method: {method}")
-    structure.to_csv(output_path, sep="\t", index=False)
+    structure.to_parquet(output_path, index=False)
 
 if __name__ == "__main__":
     main()
