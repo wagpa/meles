@@ -85,8 +85,14 @@ rule score:
         test_sets = expand(aggregated_test_pattern, k=range(k), allow_missing=True)
     output:
         score_pattern
-    script:
-        "scripts/score.py" # "script/that/for/each/k/grabs/the/test/samples/and/predicts/the/identities/agains/the/respective/train/latent/space/and/after/doing/this/for/all/the/samples/across/all/c/computes/a/single/accuracy/score"
+    params:
+        train_args = lambda wildcards, input: " ".join(f"--train-set '{path}'" for path in input.train_sets),
+        test_args = lambda wildcards, input: " ".join(f"--test-set '{path}'" for path in input.test_sets)
+    shell:
+        "python workflow/scripts/score.py "
+        "{params.train_args} "
+        "{params.test_args} "
+        "--output {output:q}"
 
 
 # This rule triggers the experiment for all combinations.
@@ -94,15 +100,8 @@ rule all:
     default_target: True
     input:
         expand(
-            aggregated_train_pattern,
+            score_pattern,
             anonymization_method=anonymization_methods,
             embedding_method=embedding_methods,
-            aggregation_method=aggregation_methods,
-            k=range(k),
+            aggregation_method=aggregation_methods
         )
-        #expand(
-        #    score_pattern,
-        #    anonymization_method=anonymization_methods,
-        #    embedding_method=embedding_methods,
-        #    aggregation_method=aggregation_methods
-        #)
