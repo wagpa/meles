@@ -1,25 +1,5 @@
-"""Score each k-fold of aggregated embeddings.
-
-For every fold this computes standard face re-identification metrics by matching
-each test (query) embedding against the train (gallery) embeddings using cosine
-similarity (the metric ArcFace is trained for):
-
-- mAP:      mean average precision over all queries, ranking the individual
-            gallery embeddings (scikit-learn's label ranking average precision).
-- accuracy: fraction of queries whose closest gallery item has the correct
-            identity (equivalent to Rank-1).
-- rank_1/5/10: fraction of queries whose correct identity appears within the
-            top-1/5/10 ranked identities (CMC). Identities are ranked by their
-            best-matching gallery embedding, so repeated embeddings of the same
-            identity do not occupy multiple ranks.
-
-The per-fold metrics are collected into a single dataframe and written to the
-score output path.
-
-The full (queries x gallery) similarity matrix does not fit in memory for
-realistic fold sizes (~50k queries x ~90k gallery items is >30 GB), so queries
-are streamed in chunks and the metrics are accumulated as counts/sums over
-those chunks.
+"""
+Score each k-fold of aggregated embeddings.
 """
 
 import logging
@@ -35,51 +15,9 @@ from meles.classifier import Classifier
 
 logger = logging.getLogger(__name__)
 
-RANKS = (1, 5, 10)
-
-# Rows of the embedding TSVs parsed per read, and queries scored per similarity
-# block. Both bound peak memory rather than changing the result.
-READ_CHUNK_ROWS = 8192
-
-
-def parse_embedding(value) -> np.ndarray:
-    """Parse a serialized embedding cell into a 1-D float32 array.
-
-    Embeddings are written to TSV as the string repr of a Python list, so they
-    come back as strings. Already-parsed sequences are passed through.
-    """
-    if isinstance(value, (list, tuple, np.ndarray)):
-        return np.asarray(value, dtype=np.float32)
-    return np.fromstring(value.strip().strip("[]"), sep=",", dtype=np.float32)
-
-
-def load_embeddings(path: Path) -> tuple[np.ndarray, np.ndarray]:
-    """Load a TSV into an (N, D) float32 embedding matrix and an (N,) identity array.
-
-    The file is read in row blocks so the parsed matrix, and not the raw text of
-    the whole file, dominates memory usage.
-    """
-    logger.debug("Reading embeddings from %s", path)
-    blocks: list[np.ndarray] = []
-    identities: list[np.ndarray] = []
-    reader = pd.read_parquet(
-        path, usecols=["identity", "embedding"], chunksize=READ_CHUNK_ROWS
-    )
-    for frame in reader:
-        blocks.append(np.vstack([parse_embedding(e) for e in frame["embedding"]]))
-        identities.append(frame["identity"].to_numpy())
-    return np.vstack(blocks), np.concatenate(identities)
-
-
-def _l2_normalize(matrix: np.ndarray) -> np.ndarray:
-    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
-    return matrix / np.clip(norms, a_min=1e-12, a_max=None)
-
-
 def score_fold(
     train_structure: pd.DataFrame,
     test_structure: pd.DataFrame,
-    ranks: tuple[int, ...] = RANKS,
 ) -> dict[str, float]:
     """Compute re-identification metrics for a single fold.
 
@@ -96,7 +34,7 @@ def score_fold(
     classifier.fit(X_train, y_train)
 
     # Top-1 accuracy: the closest neighbour's identity is the predicted identity.
-    neighbor_labels, _ = classifier.classify(X_test, n_neighbors=max(RANKS))
+    neighbor_labels, _ = classifier.classify(X_test, n_neighbors=1)
     y_pred = neighbor_labels[:, 0]
     accuracy = accuracy_score(y_test, y_pred)
 
