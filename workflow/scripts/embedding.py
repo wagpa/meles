@@ -4,8 +4,7 @@ import logging
 import pandas as pd
 from tqdm.auto import tqdm
 
-from meles.recognizer.arcface import ArcFaceRecognizer
-from meles.recognizer.vggface import VGGFaceRecognizer
+from meles.recognizer.deepface import DeepFaceRecognizer
 
 logger = logging.getLogger(__name__)
 
@@ -33,9 +32,41 @@ def main(input_path: Path, output_path: Path, method: str) -> None:
     logger.debug("Applying embedding %(method)", {method})
     match method:
         case "arcface":
-            structure["embedding"] = ArcFaceRecognizer().embed(paths)
+            structure["embedding"] = DeepFaceRecognizer(model_name="Arcface").embed(
+                paths
+            )
         case "vggface":
-            structure["embedding"] = VGGFaceRecognizer().embed(paths)
+            structure["embedding"] = DeepFaceRecognizer(model_name="VGG-Face").embed(
+                paths
+            )
+        case "facenet":
+            structure["embedding"] = DeepFaceRecognizer(model_name="Facenet").embed(
+                paths
+            )
+        case "facenet512":
+            structure["embedding"] = DeepFaceRecognizer(model_name="Facenet512").embed(
+                paths
+            )
+        case "openface":
+            structure["embedding"] = DeepFaceRecognizer(model_name="OpenFace").embed(
+                paths
+            )
+        case "deepface":
+            structure["embedding"] = DeepFaceRecognizer(model_name="DeepFace").embed(
+                paths
+            )
+        case "deepid":
+            structure["embedding"] = DeepFaceRecognizer(model_name="DeepID").embed(
+                paths
+            )
+        case "dlib":
+            structure["embedding"] = DeepFaceRecognizer(model_name="Dlib").embed(paths)
+        case "sface":
+            structure["embedding"] = DeepFaceRecognizer(model_name="SFace").embed(paths)
+        case "ghostfacenet":
+            structure["embedding"] = DeepFaceRecognizer(
+                model_name="GhostFaceNet"
+            ).embed(paths)
         case _:
             raise ValueError(f"Unknown embedding method: {method}")
     structure.to_parquet(output_path, index=False)

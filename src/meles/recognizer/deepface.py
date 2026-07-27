@@ -5,15 +5,17 @@ from meles.common import Frames, Embeddings
 from meles.recognizer.recognizer import Recognizer
 
 
-class VGGFaceRecognizer(Recognizer):
-    model_name: str = "VGG-Face"
+class DeepFaceRecognizer(Recognizer):
+    model_name: str = "ArcFace"
 
     def __init__(
         self,
+        model_name: str = "ArcFace",
         detector_backend: str = "opencv",
         enforce_detection: bool = False,
         batch_size: int = 64,
     ):
+        self.model_name = model_name
         self.detector_backend = detector_backend
         self.enforce_detection = enforce_detection
         self.batch_size = batch_size

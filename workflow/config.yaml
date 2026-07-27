@@ -20,6 +20,14 @@ anonymization_methods:
 embedding_methods:
 - arcface
 - vggface
+- facenet
+- facenet512
+- openface
+#- deepface # TODO not supported by tf version?
+- deepid
+#- dlib # TODO requires dlib package: pip install dlib
+- sface
+- ghostfacenet
 
 # The aggregation methods (with implicit parametrization) to be tested.
 aggregation_methods:
