@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pandas as pd
 
+
 def read_ytfaces(path: Path) -> pd.DataFrame:
     """
     Reads the YouTube Faces dataset from the given path and returns a DataFrame containing the structure of the dataset.
@@ -34,24 +35,28 @@ def read_ytfaces(path: Path) -> pd.DataFrame:
                 # The frame is added to the structure (flattened) in any order.
                 # We can later sort them by their natural ordering. The path is relative to the data
                 # directory such that it can be easily used in other files.
-                _structure.append({
-                    'identity': identity_dir.name,
-                    'video': video_dir.name,
-                    'frame': frame_file.name,
-                    'frame_suffix': frame_file.suffix,
-                    'path': str(frame_file.relative_to(path))
-                })
+                _structure.append(
+                    {
+                        "identity": identity_dir.name,
+                        "video": video_dir.name,
+                        "frame": frame_file.name,
+                        "frame_suffix": frame_file.suffix,
+                        "path": str(frame_file.relative_to(path)),
+                    }
+                )
     return pd.DataFrame(_structure)
 
 
 def truncate_dataset(
     dataset: pd.DataFrame,
     min_videos_per_identity: int = 3,
-    max_frames_per_video: int = 1000
+    max_frames_per_video: int = 1000,
 ) -> pd.DataFrame:
     # Keep only identities that have at least MIN_VIDEOS_PER_IDENTITY videos.
     videos_per_identity = dataset.groupby("identity")["video"].nunique()
-    eligible_identities = videos_per_identity[videos_per_identity >= min_videos_per_identity].index
+    eligible_identities = videos_per_identity[
+        videos_per_identity >= min_videos_per_identity
+    ].index
     dataset = dataset[dataset["identity"].isin(eligible_identities)].copy()
 
     # Keep only the first MAX_FRAMES_PER_VIDEO frames of each video. To do that, first
@@ -96,12 +101,12 @@ def split_dataset(
 
 
 def k_fold_splits(
-        df: pd.DataFrame,
-        k: int,
-        identity_col: str = "identity",
-        video_col: str = "video",
-        shuffle: bool = False,
-        random_state: int | None = 0,
+    df: pd.DataFrame,
+    k: int,
+    identity_col: str = "identity",
+    video_col: str = "video",
+    shuffle: bool = False,
+    random_state: int | None = 0,
 ) -> list[pd.DataFrame]:
     """k copies of df, each with a bool `train` column. Splits happen per-identity
     at video granularity: every video stays whole, every identity appears in
@@ -125,7 +130,4 @@ def k_fold_splits(
     df = df.merge(videos, on=[identity_col, video_col], how="left")
 
     # 5. fold i is the test fold; everything else is train
-    return [
-        df.drop(columns="_fold").assign(train=(df["_fold"] != i))
-        for i in range(k)
-    ]
+    return [df.drop(columns="_fold").assign(train=(df["_fold"] != i)) for i in range(k)]

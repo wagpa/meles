@@ -11,9 +11,14 @@ logger = logging.getLogger(__name__)
 # Allow the usage of progress bars on pandas dataframes
 tqdm.pandas()
 
+
 @click.command()
-@click.option("--input", "input_path", required=True, type=click.Path(exists=True, path_type=Path))
-@click.argument("output_paths", required=True, nargs=-1, type=click.Path(path_type=Path))
+@click.option(
+    "--input", "input_path", required=True, type=click.Path(exists=True, path_type=Path)
+)
+@click.argument(
+    "output_paths", required=True, nargs=-1, type=click.Path(path_type=Path)
+)
 def main(input_path: Path, output_paths: tuple[Path, ...]) -> None:
     # Create the output directories if they do not exist
     logger.debug("Generating output directories")
@@ -29,6 +34,7 @@ def main(input_path: Path, output_paths: tuple[Path, ...]) -> None:
     logger.debug("Splitting into %d folds", k)
     for i, fold in enumerate(k_fold_splits(structure, k)):
         fold.to_parquet(output_paths[i], index=False)
+
 
 if __name__ == "__main__":
     main()

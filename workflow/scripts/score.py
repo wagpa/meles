@@ -15,6 +15,7 @@ from meles.classifier import Classifier
 
 logger = logging.getLogger(__name__)
 
+
 def score_fold(
     train_structure: pd.DataFrame,
     test_structure: pd.DataFrame,
@@ -38,7 +39,7 @@ def score_fold(
     y_pred = neighbor_labels[:, 0]
     accuracy = accuracy_score(y_test, y_pred)
 
-    return { "accuracy": accuracy }
+    return {"accuracy": accuracy}
 
 
 @click.command()
@@ -60,7 +61,6 @@ def score_fold(
 )
 @click.option("--output", "output_path", required=True, type=click.Path(path_type=Path))
 @click.option("--method", required=True)
-
 def main(
     train_paths: tuple[Path, ...],
     test_paths: tuple[Path, ...],
@@ -78,7 +78,9 @@ def main(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     rows = []
-    for fold, (train_path, test_path) in tqdm(enumerate(zip(train_paths, test_paths)), desc="Scoring folds"):
+    for fold, (train_path, test_path) in tqdm(
+        enumerate(zip(train_paths, test_paths)), desc="Scoring folds"
+    ):
         logger.debug("Scoring fold %d", fold)
         train_structure = pd.read_parquet(train_path)
         test_structure = pd.read_parquet(test_path)

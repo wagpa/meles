@@ -24,7 +24,7 @@ class ClusteringAggregator(Aggregator):
         self,
         distance_threshold: Union[float, None] = 1.0,
         n_clusters: Union[int, None] = None,
-        min_cluster_size: int = 0
+        min_cluster_size: int = 0,
     ):
         super().__init__()
         self.distance_threshold = distance_threshold

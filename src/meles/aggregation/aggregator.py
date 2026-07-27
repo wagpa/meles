@@ -8,6 +8,7 @@ class Aggregator(ABC):
     By default, the aggregator does not aggregate the embeddings. It simply returns the embeddings as is. This will be used as
     the experiment baseline.
     """
+
     def __init__(self):
         pass
 
