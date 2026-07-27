@@ -19,6 +19,7 @@ anonymization_methods:
 # The embedding models (with implicit parametrization) to be tested.
 embedding_methods:
 - arcface
+- vggface
 
 # The aggregation methods (with implicit parametrization) to be tested.
 aggregation_methods:

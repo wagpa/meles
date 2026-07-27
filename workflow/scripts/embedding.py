@@ -5,6 +5,7 @@ import pandas as pd
 from tqdm.auto import tqdm
 
 from meles.recognizer.arcface import ArcFaceRecognizer
+from meles.recognizer.vggface import VGGFaceRecognizer
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,8 @@ def main(input_path: Path, output_path: Path, method: str) -> None:
     match method:
         case "arcface":
             structure["embedding"] = ArcFaceRecognizer().embed(paths)
+        case "vggface":
+            structure["embedding"] = VGGFaceRecognizer().embed(paths)
         case _:
             raise ValueError(f"Unknown embedding method: {method}")
     structure.to_parquet(output_path, index=False)
