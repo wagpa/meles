@@ -29,3 +29,9 @@ aggregation_methods:
 - pooling_median
 - clustering_mean_d1_min3
 - clustering_median_d1_min3
+- clustering_mean_d08_min3
+- clustering_median_d08_min3
+- clustering_mean_d1_min3
+- clustering_mean_d1_min3
+- clustering_mean_d08_min3
+- clustering_mean_d08_min3
