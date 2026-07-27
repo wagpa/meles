@@ -1,12 +1,10 @@
-from typing import Callable, Union
+from typing import Union
 
 import numpy as np
 from numpy.typing import NDArray
 from sklearn.cluster import AgglomerativeClustering
 
 from meles.aggregation.aggregator import Aggregator, Embeddings
-from meles.common import Frames
-from meles.recognizer.recognizer import Recognizer
 
 
 class ClusteringAggregator(Aggregator):
@@ -24,15 +22,14 @@ class ClusteringAggregator(Aggregator):
 
     def __init__(
         self,
-        recognizer: Recognizer,
         distance_threshold: Union[float, None] = 1.0,
         n_clusters: Union[int, None] = None,
-        min_size: int = 0
+        min_cluster_size: int = 0
     ):
-        super().__init__(recognizer)
+        super().__init__()
         self.distance_threshold = distance_threshold
         self.n_clusters = n_clusters
-        self.min_size = min_size
+        self.min_size = min_cluster_size
 
     def _reduce(self, cluster: NDArray) -> NDArray:
         """
@@ -52,17 +49,16 @@ class ClusteringAggregator(Aggregator):
         if len(embeddings) < 2:
             return np.zeros(len(embeddings), dtype=int)
 
-        metric = "cosine" if self.recognizer.metric() == "cosine" else "euclidean"
         clustering = AgglomerativeClustering(
             n_clusters=self.n_clusters,
             distance_threshold=self.distance_threshold,
-            metric=metric,
+            metric="cosine",
             linkage="average",
         )
         return clustering.fit_predict(embeddings)
 
-    def embed(self, frames: Frames) -> Embeddings:
-        embeddings = np.asarray(self.recognizer.embed(frames), dtype=float)
+    def aggregate(self, embeddings: Embeddings) -> Embeddings:
+        embeddings = np.asarray(embeddings, dtype=float)
         labels = self._cluster_labels(embeddings)
 
         centroids = [
@@ -71,9 +67,6 @@ class ClusteringAggregator(Aggregator):
             if (subset := embeddings[labels == label]).__len__() >= self.min_size
         ]
         return np.stack(centroids).tolist()
-
-    def name(self) -> str:
-        return "cluster"
 
 
 class MeanClusteringAggregator(ClusteringAggregator):
@@ -84,9 +77,6 @@ class MeanClusteringAggregator(ClusteringAggregator):
     def _reduce(self, cluster: NDArray) -> NDArray:
         return np.mean(cluster, axis=0)
 
-    def name(self) -> str:
-        return "cluster_mean"
-
 
 class MedianClusteringAggregator(ClusteringAggregator):
     """
@@ -95,6 +85,3 @@ class MedianClusteringAggregator(ClusteringAggregator):
 
     def _reduce(self, cluster: NDArray) -> NDArray:
         return np.median(cluster, axis=0)
-
-    def name(self) -> str:
-        return "cluster_median"

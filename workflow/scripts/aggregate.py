@@ -4,7 +4,7 @@ import logging
 import pandas as pd
 
 from meles.aggregation.aggregator import NoAggregator
-from meles.aggregation.pooling import MeanPoolingAggregator
+from meles.aggregation import (pooling, clustering, quality)
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +31,24 @@ def main(input_path: Path, train_output_path: Path, test_output_path: Path, meth
     match method:
         case "none":
             pass
-        case "mean":
-            agg = MeanPoolingAggregator()
+        case "pooling_mean":
+            agg = pooling.MeanPoolingAggregator()
+        case "pooling_min":
+            agg = pooling.MinPoolingAggregator()
+        case "pooling_max":
+            agg = pooling.MaxPoolingAggregator()
+        case "pooling_median":
+            agg = pooling.MedianPoolingAggregator()
+        case "clustering_mean_d1_min3":
+            agg = clustering.MeanClusteringAggregator(
+                distance_threshold=1.0,
+                min_cluster_size=3,
+            )
+        case "clustering_median_d1_min3":
+            agg = clustering.MedianClusteringAggregator(
+                distance_threshold=1.0,
+                min_cluster_size=3,
+            )
         case _:
             raise ValueError(f"Unknown method: {method}")
 

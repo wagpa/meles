@@ -23,3 +23,9 @@ embedding_methods:
 # The aggregation methods (with implicit parametrization) to be tested.
 aggregation_methods:
 - none
+- pooling_mean
+- pooling_min
+- pooling_max
+- pooling_median
+- clustering_mean_d1_min3
+- clustering_median_d1_min3
