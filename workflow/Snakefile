@@ -11,12 +11,12 @@ aggregation_methods = config["aggregation_methods"]
 k = int(config["k_folds"])
 
 # The file path patterns for the snakemake rules.
-anonymized_pattern = results_dir / "anonymize/{anonymization_method}/structure.tsv"
-embedding_pattern = results_dir / "embedding/{anonymization_method}/{embedding_method}/embeddings.tsv"
-k_fold_pattern = results_dir / "k_fold/{anonymization_method}/{embedding_method}/split-{k}.tsv"
-aggregated_train_pattern = results_dir / "aggregation/{anonymization_method}/{embedding_method}/{aggregation_method}/split-{k}-train.tsv"
-aggregated_test_pattern = results_dir / "aggregation/{anonymization_method}/{embedding_method}/{aggregation_method}/split-{k}-test.tsv"
-score_pattern = results_dir / "scoring/{anonymization_method}/{embedding_method}/{aggregation_method}/scores.tsv"
+anonymized_pattern = results_dir / "anonymize/{anonymization_method}/structure.parquet"
+embedding_pattern = results_dir / "embedding/{anonymization_method}/{embedding_method}/embeddings.parquet"
+k_fold_pattern = results_dir / "k_fold/{anonymization_method}/{embedding_method}/split-{k}.parquet"
+aggregated_train_pattern = results_dir / "aggregation/{anonymization_method}/{embedding_method}/{aggregation_method}/split-{k}-train.parquet"
+aggregated_test_pattern = results_dir / "aggregation/{anonymization_method}/{embedding_method}/{aggregation_method}/split-{k}-test.parquet"
+score_pattern = results_dir / "scoring/{anonymization_method}/{embedding_method}/{aggregation_method}/scores.parquet"
 
 
 # The anonymization rule applies parametrized anonymization to the input frames. It takes a structure file as input, applying

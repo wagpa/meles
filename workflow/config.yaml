@@ -4,7 +4,7 @@
 # - video: the name of the video
 # - frame: the name of the frame
 # - path: the path to the frame image relative to the structure file
-input_dataset: data/ytfaces.tsv
+input_dataset: data/ytfaces.parquet
 
 # The directory where the results will be saved.
 results_directory: results
