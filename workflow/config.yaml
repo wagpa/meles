@@ -15,6 +15,9 @@ k_folds: 3
 # The anonymization methods (with implicit parametrization) to be tested.
 anonymization_methods:
 - none
+- gaussianblur
+- blackbar
+- pixelation
 
 # The embedding models (with implicit parametrization) to be tested.
 embedding_methods:
@@ -23,11 +26,11 @@ embedding_methods:
 - facenet
 - facenet512
 - openface
-#- deepface # TODO not supported by tf version?
 - deepid
-#- dlib # TODO requires dlib package: pip install dlib
 - sface
 - ghostfacenet
+#- deepface # TODO not supported by tf version?
+#- dlib # TODO requires dlib package: pip install dlib
 
 # The aggregation methods (with implicit parametrization) to be tested.
 aggregation_methods:
