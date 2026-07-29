@@ -7,18 +7,19 @@ requires-python = ">=3.12"
 dependencies = [
     "click>=8.4.2",
     "deepface>=0.0.100",
-    "diskcache>=5.6.3",
     "fastparquet>=2026.5.0",
     "matplotlib>=3.11.0",
     "numpy",
     "opencv-python>=4.13.0.92",
-    "pandas>=3.0.4",
+    "pandas==2.3.3",
     "pyarrow>=25.0.0",
     "scikit-learn>=1.9.0",
     "seaborn>=0.13.2",
     "snakemake>=9.23.1",
     "snakevision>=1.1.0",
-    "tf-keras>=2.21.0",
+    "tensorflow==2.19.1",
+    "tensorflow-metal==1.2.0",
+    "tf-keras>=2.19.0",
     "tqdm>=4.68.3",
 ]
 
