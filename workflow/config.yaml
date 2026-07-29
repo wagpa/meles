@@ -47,3 +47,4 @@ aggregation_methods:
 - clustering_mean_d1_min3
 - clustering_mean_d08_min3
 - clustering_mean_d08_min3
+#- self-attention # TODO implement me!

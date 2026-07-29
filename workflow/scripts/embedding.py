@@ -32,7 +32,7 @@ def main(input_path: Path, output_path: Path, method: str) -> None:
     logger.debug("Applying embedding %(method)", {method})
     match method:
         case "arcface":
-            structure["embedding"] = DeepFaceRecognizer(model_name="Arcface").embed(
+            structure["embedding"] = DeepFaceRecognizer(model_name="ArcFace").embed(
                 paths
             )
         case "vggface":
