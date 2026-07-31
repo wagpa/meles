@@ -6,8 +6,9 @@
 # - path: the path to the frame image relative to the structure file
 input_dataset: data/ytfaces.parquet
 
-# The directory where the results will be saved.
+# The directory where the results and logs will be saved.
 results_directory: results
+logs_directory: logs
 
 # The number of folds for the k-fold cross-validation.
 k_folds: 3
@@ -39,12 +40,10 @@ aggregation_methods:
 - pooling_min
 - pooling_max
 - pooling_median
-- clustering_mean_d1_min3
-- clustering_median_d1_min3
-- clustering_mean_d08_min3
-- clustering_median_d08_min3
-- clustering_mean_d1_min3
-- clustering_mean_d1_min3
-- clustering_mean_d08_min3
-- clustering_mean_d08_min3
+#- clustering_median_d1_min3
+#- clustering_mean_d08_min3
+#- clustering_median_d08_min3
+#- clustering_mean_d1_min3
+#- clustering_mean_d08_min3
+#- clustering_mean_d08_min3
 #- self-attention # TODO implement me!
