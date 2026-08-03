@@ -6,4 +6,6 @@ Frame: TypeAlias = Union[str, NDArray[Any], IO[bytes]]
 
 Frames: TypeAlias = Sequence[Frame]
 
-Embeddings: TypeAlias = List[Union[List[float], None]]
+OptEmbeddings: TypeAlias = List[Union[List[float], None]]
+
+Embeddings: TypeAlias = List[List[float]]

@@ -1,7 +1,7 @@
 from deepface import DeepFace
 from tqdm.auto import tqdm
 
-from meles.common import Frames, Embeddings
+from meles.common import Frames, OptEmbeddings
 from meles.recognizer.recognizer import Recognizer
 
 
@@ -23,12 +23,12 @@ class DeepFaceRecognizer(Recognizer):
     def metric(self) -> str:
         return "cosine"
 
-    def embed(self, frames: Frames) -> Embeddings:
+    def embed(self, frames: Frames) -> OptEmbeddings:
         # Embed frames in batches so DeepFace keeps its batching efficiency
         # while progress stays observable. The tqdm bar advances by one per
         # frame and writes to stderr, which Snakemake captures in the per-job
         # log, giving live feedback on long embedding runs.
-        embeddings: Embeddings = []
+        embeddings: OptEmbeddings = []
         with tqdm(
             total=len(frames),
             desc=f"Embedding ({self.model_name})",

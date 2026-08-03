@@ -8,7 +8,7 @@ from pathlib import Path
 import click
 import numpy as np
 import pandas as pd
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import top_k_accuracy_score
 from tqdm.auto import tqdm
 
 from meles.classifier import Classifier
@@ -34,12 +34,31 @@ def score_fold(
     classifier = Classifier(metric="cosine")
     classifier.fit(X_train, y_train)
 
-    # Top-1 accuracy: the closest neighbour's identity is the predicted identity.
-    neighbor_labels, _ = classifier.classify(X_test, n_neighbors=1)
-    y_pred = neighbor_labels[:, 0]
-    accuracy = accuracy_score(y_test, y_pred)
+    K = 20  # neighbors per frame; more = denser, less tie-degenerate scores
+    neighbor_labels, _ = classifier.classify(X_test, n_neighbors=K)  # (n_frames, K)
+    
+    classes = np.union1d(test_structure["identity"].unique(), neighbor_labels.ravel())
+    class_to_idx = {c: i for i, c in enumerate(classes)}
+    
+    # per-frame soft score = fraction of the K neighbors voting each class
+    frame_scores = np.zeros((len(neighbor_labels), len(classes)))
+    for j in range(K):
+        idx = np.fromiter((class_to_idx[l] for l in neighbor_labels[:, j]), dtype=int)
+        frame_scores[np.arange(len(idx)), idx] += 1
+    frame_scores /= K
+    
+    sc = pd.DataFrame(frame_scores, columns=classes)
+    sc["video"] = test_structure["video"].values
+    sc["identity"] = test_structure["identity"].values
+    
+    video_scores = sc.groupby("video")[list(classes)].mean()           # dense, non-integer
+    y_true = sc.groupby("video")["identity"].first().loc[video_scores.index]
 
-    return {"accuracy": accuracy}
+    result = {}
+    for k in [1, 5, 10]:
+        acc = top_k_accuracy_score(y_true.to_numpy(), video_scores.to_numpy(), k=min(k, len(classes)), labels=classes)
+        result[f"top-{k}"] = acc
+    return result
 
 
 @click.command()

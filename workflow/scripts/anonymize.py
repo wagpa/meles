@@ -45,7 +45,7 @@ def anonymize(input_path: Path, output_path: Path, anonymizer: Anonymizer) -> No
             raise ValueError(f"Failed to encode frame: {sample['path']}")
         structure.loc[index, "path"] = str(
             path.relative_to(output_path.parent)
-        )  # TODO this does not update the path!
+        )
     structure.to_parquet(output_path)
 
 

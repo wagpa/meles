@@ -1,5 +1,5 @@
 from abc import abstractmethod, ABC
-from meles.common import Frames, Embeddings
+from meles.common import Frames, OptEmbeddings
 
 
 class Recognizer(ABC):
@@ -17,7 +17,7 @@ class Recognizer(ABC):
         pass
 
     @abstractmethod
-    def embed(self, frames: Frames) -> Embeddings:
+    def embed(self, frames: Frames) -> OptEmbeddings:
         """
         The abstract class for recognizers. It embeds a list f frames into embeddings.
         :param frames: The list of frames to embed with shape (num_frames, frame_dim)

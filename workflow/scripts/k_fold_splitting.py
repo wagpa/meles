@@ -29,6 +29,12 @@ def main(input_path: Path, output_paths: tuple[Path, ...]) -> None:
     logger.debug("Reading input file")
     structure = pd.read_parquet(input_path)
 
+    # Drop any rows with NaN values (frames without embeddings)
+    with_nan = len(structure)
+    structure = structure.dropna()
+    if len(structure) != with_nan:
+        logger.warning("Dropped %d rows with NaN values", with_nan - len(structure))
+
     # Split into 'k' folds and save
     k = len(output_paths)
     logger.debug("Splitting into %d folds", k)

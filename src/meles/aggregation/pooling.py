@@ -1,8 +1,10 @@
 import numpy as np
 from meles.aggregation.aggregator import Aggregator, Embeddings
-from meles.common import Frames
-from meles.recognizer.recognizer import Recognizer
 
+def normalized(embeddings: Embeddings) -> Embeddings:
+    arr = np.asarray(embeddings, dtype=np.float64)
+    norms = np.linalg.norm(arr, axis=1, keepdims=True)
+    return arr / np.where(norms == 0, 1, norms)
 
 class MeanPoolingAggregator(Aggregator):
     """
@@ -13,7 +15,7 @@ class MeanPoolingAggregator(Aggregator):
         super().__init__()
 
     def aggregate(self, embeddings: Embeddings) -> Embeddings:
-        return np.mean(embeddings, axis=0, keepdims=True).tolist()
+        return np.mean(normalized(embeddings), axis=0, keepdims=True).tolist()
 
 
 class MedianPoolingAggregator(Aggregator):
@@ -25,7 +27,7 @@ class MedianPoolingAggregator(Aggregator):
         super().__init__()
 
     def aggregate(self, embeddings: Embeddings) -> Embeddings:
-        return np.median(embeddings, axis=0, keepdims=True).tolist()
+        return np.median(normalized(embeddings), axis=0, keepdims=True).tolist()
 
 
 class MaxPoolingAggregator(Aggregator):
@@ -37,9 +39,9 @@ class MaxPoolingAggregator(Aggregator):
         super().__init__()
 
     def aggregate(self, embeddings: Embeddings) -> Embeddings:
-        return np.max(embeddings, axis=0, keepdims=True).tolist()
+        return np.max(normalized(embeddings), axis=0, keepdims=True).tolist()
 
-
+# TODO: will potentially produce zero embeddings for regularized recognizers
 class MinPoolingAggregator(Aggregator):
     """
     The MinPoolingAggregator pools all embeddings into a single embedding using the column wise min.
@@ -49,4 +51,4 @@ class MinPoolingAggregator(Aggregator):
         super().__init__()
 
     def aggregate(self, embeddings: Embeddings) -> Embeddings:
-        return np.min(embeddings, axis=0, keepdims=True).tolist()
+        return np.min(normalized(embeddings), axis=0, keepdims=True).tolist()
