@@ -1,11 +1,12 @@
 from typing import Optional, Sequence
-
+import warnings
 import numpy as np
 from numpy.typing import NDArray
 from sklearn.neighbors import NearestNeighbors
 
 from meles.common import Embeddings
 
+#warnings.filterwarnings("error")
 
 class Classifier:
     model: NearestNeighbors

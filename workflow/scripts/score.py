@@ -16,16 +16,7 @@ from meles.classifier import Classifier
 logger = logging.getLogger(__name__)
 
 
-def score_fold(
-    train_structure: pd.DataFrame,
-    test_structure: pd.DataFrame,
-) -> dict[str, float]:
-    """Compute re-identification metrics for a single fold.
-
-    Train and test structures with embeddings. Similarity is cosine,
-    so both sides are L2-normalized and scored by dot product.
-    """
-
+def score_fold(train_structure, test_structure) -> dict[str, float]:
     X_train = np.vstack(train_structure["embedding"].to_numpy())
     y_train = train_structure["identity"].to_numpy()
     X_test = np.vstack(test_structure["embedding"].to_numpy())
@@ -34,30 +25,31 @@ def score_fold(
     classifier = Classifier(metric="cosine")
     classifier.fit(X_train, y_train)
 
-    K = 20  # neighbors per frame; more = denser, less tie-degenerate scores
-    neighbor_labels, _ = classifier.classify(X_test, n_neighbors=K)  # (n_frames, K)
-    
-    classes = np.union1d(test_structure["identity"].unique(), neighbor_labels.ravel())
+    K = 20
+    with np.errstate(all="ignore"):
+        neighbor_labels, dists = classifier.classify(X_test, n_neighbors=K)
+
+    classes = np.union1d(np.unique(y_test), neighbor_labels.ravel())
     class_to_idx = {c: i for i, c in enumerate(classes)}
-    
-    # per-frame soft score = fraction of the K neighbors voting each class
+
     frame_scores = np.zeros((len(neighbor_labels), len(classes)))
     for j in range(K):
         idx = np.fromiter((class_to_idx[l] for l in neighbor_labels[:, j]), dtype=int)
         frame_scores[np.arange(len(idx)), idx] += 1
     frame_scores /= K
-    
+
     sc = pd.DataFrame(frame_scores, columns=classes)
     sc["video"] = test_structure["video"].values
     sc["identity"] = test_structure["identity"].values
-    
-    video_scores = sc.groupby("video")[list(classes)].mean()           # dense, non-integer
+
+    video_scores = sc.groupby("video")[list(classes)].mean()
     y_true = sc.groupby("video")["identity"].first().loc[video_scores.index]
 
     result = {}
     for k in [1, 5, 10]:
-        acc = top_k_accuracy_score(y_true.to_numpy(), video_scores.to_numpy(), k=min(k, len(classes)), labels=classes)
-        result[f"top-{k}"] = acc
+        result[f"top-{k}"] = top_k_accuracy_score(
+            y_true.to_numpy(), video_scores.to_numpy(),
+            k=min(k, len(classes)), labels=classes)
     return result
 
 
@@ -86,12 +78,6 @@ def main(
     output_path: Path,
     method: str,
 ) -> None:
-    if len(train_paths) != len(test_paths):
-        raise click.BadParameter(
-            f"Got {len(train_paths)} train sets but {len(test_paths)} test sets; "
-            "each fold needs both."
-        )
-
     # Create the output directory if it does not exist
     logger.debug("Generating output directory")
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -107,8 +93,7 @@ def main(
         del train_structure, test_structure
         rows.append({"k": fold, **metrics})
 
-    columns = ["k", "accuracy"]
-    scores = pd.DataFrame(rows, columns=columns)
+    scores = pd.DataFrame(rows)
     scores.to_parquet(output_path, index=False)
 
 
