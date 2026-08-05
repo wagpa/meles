@@ -1,6 +1,7 @@
 import click
 from pathlib import Path
 import logging
+import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 
@@ -34,6 +35,18 @@ def main(input_path: Path, output_paths: tuple[Path, ...]) -> None:
     structure = structure.dropna()
     if len(structure) != with_nan:
         logger.warning("Dropped %d rows with NaN values", with_nan - len(structure))
+
+    # Drop any rows with a zero-norm embedding (e.g. a fully-anonymized frame that some
+    # recognizers collapse to an all-zero vector). Cosine similarity is undefined for
+    # these, and they carry no directional signal for any other metric either.
+    with_zero_norm = len(structure)
+    norms = structure["embedding"].apply(np.linalg.norm)
+    structure = structure[norms > 0]
+    if len(structure) != with_zero_norm:
+        logger.warning(
+            "Dropped %d rows with zero-norm embeddings",
+            with_zero_norm - len(structure),
+        )
 
     # Split into 'k' folds and save
     k = len(output_paths)
