@@ -53,8 +53,7 @@ class ClusteringAggregator(Aggregator):
             n_clusters=self.n_clusters,
             distance_threshold=self.distance_threshold,
             metric="cosine",
-            linkage="maximum",
-            connectivity=True,
+            linkage="average",
         )
         return clustering.fit_predict(embeddings)
 
