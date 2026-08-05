@@ -37,13 +37,11 @@ embedding_methods:
 aggregation_methods:
 - none
 - pooling_mean
-- pooling_min
-- pooling_max
-- pooling_median
+#- pooling_min
+#- pooling_max
+#- pooling_median
 #- clustering_median_d1_min3
-#- clustering_mean_d08_min3
+- clustering_mean_d1_min3
 #- clustering_median_d08_min3
-#- clustering_mean_d1_min3
-#- clustering_mean_d08_min3
 #- clustering_mean_d08_min3
 #- self-attention # TODO implement me!

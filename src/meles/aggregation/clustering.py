@@ -4,7 +4,7 @@ import numpy as np
 from numpy.typing import NDArray
 from sklearn.cluster import AgglomerativeClustering
 
-from meles.aggregation.aggregator import Aggregator, Embeddings
+from meles.aggregation.aggregator import Aggregator, Embeddings, normalized
 
 
 class ClusteringAggregator(Aggregator):
@@ -53,11 +53,14 @@ class ClusteringAggregator(Aggregator):
             n_clusters=self.n_clusters,
             distance_threshold=self.distance_threshold,
             metric="cosine",
-            linkage="average",
+            linkage="maximum",
+            connectivity=True,
         )
         return clustering.fit_predict(embeddings)
 
     def aggregate(self, embeddings: Embeddings) -> Embeddings:
+        embeddings = normalized(embeddings)
+
         embeddings = np.asarray(embeddings, dtype=float)
         labels = self._cluster_labels(embeddings)
 

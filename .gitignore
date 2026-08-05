@@ -221,4 +221,6 @@ __marimo__/
 
 # Datasets
 data
+results
+logs
 /.snakemake/

@@ -1,10 +1,6 @@
 import numpy as np
-from meles.aggregation.aggregator import Aggregator, Embeddings
+from meles.aggregation.aggregator import Aggregator, Embeddings, normalized
 
-def normalized(embeddings: Embeddings) -> Embeddings:
-    arr = np.asarray(embeddings, dtype=np.float64)
-    norms = np.linalg.norm(arr, axis=1, keepdims=True)
-    return arr / np.where(norms == 0, 1, norms)
 
 class MeanPoolingAggregator(Aggregator):
     """
