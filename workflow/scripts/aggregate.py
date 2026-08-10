@@ -4,7 +4,7 @@ import logging
 import pandas as pd
 
 from meles.aggregation.aggregator import NoAggregator
-from meles.aggregation import pooling, clustering, quality
+from meles.aggregation import pooling, clustering, quality, consensus
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +90,8 @@ def main(
                 distance_threshold=0.8,
                 min_cluster_size=3,
             )
+        case "consensus":
+            agg = consensus.ConsensusAggregator()
         case _:
             raise ValueError(f"Unknown method: {method}")
 
