@@ -90,8 +90,12 @@ def main(
                 distance_threshold=0.8,
                 min_cluster_size=3,
             )
-        case "consensus":
-            agg = consensus.ConsensusAggregator()
+        case "consensus_beta1":
+            agg = consensus.ConsensusAggregator(beta=1.0)
+        case "consensus_beta5":
+            agg = consensus.ConsensusAggregator(beta=5.0)
+        case "consensus_beta20":
+            agg = consensus.ConsensusAggregator(beta=20.0)
         case _:
             raise ValueError(f"Unknown method: {method}")
 

@@ -44,5 +44,7 @@ aggregation_methods:
 - clustering_mean_d1_min3
 - clustering_median_d08_min3
 - clustering_mean_d08_min3
-- consensus
+- consensus_beta1
+- consensus_beta5
+- consensus_beta20
 #- self-attention # TODO implement me!
