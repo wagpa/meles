@@ -3,10 +3,29 @@ from pathlib import Path
 import logging
 import pandas as pd
 
-from meles.aggregation.aggregator import NoAggregator
+from meles.aggregation.aggregator import Aggregator, NoAggregator
 from meles.aggregation import pooling, clustering, quality, consensus
 
 logger = logging.getLogger(__name__)
+
+
+def identity_level(agg: Aggregator) -> Aggregator:
+    """
+    Derive the aggregator used for the second (per-identity) train pass from the one used for the
+    first (per identity-video) pass.
+
+    ``min_cluster_size`` is an outlier filter over *frame* embeddings. The second pass only sees the
+    handful of centroids the first pass produced per video, so re-applying the filter there drops
+    every cluster and leaves the identity without any gallery embedding. Keep the clustering
+    geometry, drop the size filter.
+    """
+    if isinstance(agg, clustering.ClusteringAggregator):
+        return type(agg)(
+            distance_threshold=agg.distance_threshold,
+            n_clusters=agg.n_clusters,
+            min_cluster_size=0,
+        )
+    return agg
 
 
 @click.command()
@@ -70,26 +89,6 @@ def main(
                 distance_threshold=0.8,
                 min_cluster_size=3,
             )
-        case "clustering_mean_d1_min3":
-            agg = clustering.MeanClusteringAggregator(
-                distance_threshold=1.0,
-                min_cluster_size=3,
-            )
-        case "clustering_mean_d1_min3":
-            agg = clustering.MeanClusteringAggregator(
-                distance_threshold=1.0,
-                min_cluster_size=3,
-            )
-        case "clustering_mean_d08_min3":
-            agg = clustering.MeanClusteringAggregator(
-                distance_threshold=0.8,
-                min_cluster_size=3,
-            )
-        case "clustering_mean_d08_min3":
-            agg = clustering.MeanClusteringAggregator(
-                distance_threshold=0.8,
-                min_cluster_size=3,
-            )
         case "consensus_beta1":
             agg = consensus.ConsensusAggregator(beta=1.0)
         case "consensus_beta5":
@@ -100,14 +99,35 @@ def main(
             raise ValueError(f"Unknown method: {method}")
 
     # Aggregate the train embeddings per identity (multiple videos)
+    # First group by video, then by identity.
     train_embeddings = (
-        train_structure.groupby(["identity"])["embedding"]
+        train_structure.groupby(["identity", "video"])["embedding"]
         .apply(lambda embeddings: agg.aggregate(embeddings.to_list()))
         .explode()
         .rename("embedding")
         .reset_index()
         .dropna(subset=["embedding"])
     )
+
+    identity_agg = identity_level(agg)
+    train_embeddings = (
+        train_embeddings.groupby(["identity"])["embedding"]
+        .apply(lambda embeddings: identity_agg.aggregate(embeddings.to_list()))
+        .explode()
+        .rename("embedding")
+        .reset_index()
+        .dropna(subset=["embedding"])
+    )
+
+    lost = set(train_structure["identity"].unique()) - set(
+        train_embeddings["identity"].unique()
+    )
+    if lost:
+        logger.warning(
+            "%d identities have no train embedding after aggregation: %s",
+            len(lost),
+            sorted(lost),
+        )
 
     # Aggregate the test embeddings per identity-video (one video)
     test_embeddings = (

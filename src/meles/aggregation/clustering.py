@@ -68,6 +68,10 @@ class ClusteringAggregator(Aggregator):
             for label in np.unique(labels)
             if (subset := embeddings[labels == label]).__len__() >= self.min_size
         ]
+        # Every cluster may fall below ``min_size`` (e.g. few embeddings that all end up in
+        # separate clusters); the group then has no representative embedding at all.
+        if not centroids:
+            return []
         return np.stack(centroids).tolist()
 
 

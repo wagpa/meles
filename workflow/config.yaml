@@ -4,14 +4,15 @@
 # - video: the name of the video
 # - frame: the name of the frame
 # - path: the path to the frame image relative to the structure file
-input_dataset: data/ytfaces.parquet
+dataset: data/ytfaces.parquet
 
 # The directory where the results and logs will be saved.
-results_directory: results
-logs_directory: logs
+result_dir: results
+log_dir: logs
 
 # The number of folds for the k-fold cross-validation.
-k_folds: 3
+split_k: 3
+split_shuffle: True
 
 # The anonymization methods (with implicit parametrization) to be tested.
 anonymization_methods:
@@ -20,31 +21,49 @@ anonymization_methods:
 - blackbar
 - pixelation
 
-# The embedding models (with implicit parametrization) to be tested.
-embedding_methods:
-- arcface
-- vggface
-- facenet
-- facenet512
-- openface
-- deepid
+# The frame-level embedding models (with implicit parametrization) to be tested.
+frame_embedding_methods:
 - sface
 - ghostfacenet
-#- deepface # TODO not supported by tf version?
-#- dlib # TODO requires dlib package: pip install dlib
+- arcface
+#- vggface
+#- facenet512
+#- facenet
+#- deepid
+#- openface
 
-# The aggregation methods (with implicit parametrization) to be tested.
-aggregation_methods:
+# The video-level embedding models (with implicit parametrization) to be tested.
+video_embedding_methods:
+- dummy1
+- dummy2
+- dummy3
+
+# The video-level aggregation methods (with implicit parametrization) to be tested.
+video_aggregation_methods:
 - none
 - pooling_mean
-- pooling_min
-- pooling_max
-- pooling_median
-- clustering_median_d1_min3
-- clustering_mean_d1_min3
-- clustering_median_d08_min3
-- clustering_mean_d08_min3
+#- pooling_min
+#- pooling_max
+#- pooling_median
+#- clustering_mean_d1_min3
+#- clustering_mean_d08_min3
+#- clustering_median_d1_min3
+#- clustering_median_d08_min3
 - consensus_beta1
-- consensus_beta5
-- consensus_beta20
-#- self-attention # TODO implement me!
+#- consensus_beta5
+#- consensus_beta20
+
+# The video-level aggregation methods (with implicit parametrization) to be tested.
+identity_aggregation_methods:
+- none
+- pooling_mean
+#- pooling_min
+#- pooling_max
+#- pooling_median
+#- clustering_median_d1_min3
+#- clustering_mean_d1_min3
+#- clustering_median_d08_min3
+#- clustering_mean_d08_min3
+- consensus_beta1
+#- consensus_beta5
+#- consensus_beta20
