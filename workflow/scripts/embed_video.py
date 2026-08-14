@@ -3,6 +3,7 @@ from pathlib import Path
 import pandas as pd
 from typing import TYPE_CHECKING
 
+from meles import logs
 from meles.recognizer.deepface import DeepFaceRecognizer
 
 # Fix snakemake typechecking errors
@@ -49,6 +50,9 @@ def main(input_path: Path, output_path: Path, method: str):
 
 
 if __name__ == "__main__":
+    # Snakemake only names the log file; a script rule has to redirect into it itself.
+    logs.configure(snakemake.log[0])
+
     # noinspection unbound-local-variable
     main(
         input_path=Path(snakemake.input.dataset),

@@ -3,6 +3,8 @@ from pathlib import Path
 import pandas as pd
 from typing import TYPE_CHECKING, List
 
+from meles import logs
+
 # Fix snakemake typechecking errors
 if TYPE_CHECKING:
     from snakemake.script import Snakemake
@@ -23,6 +25,9 @@ def main(frame_paths: List[Path], video_paths: List[Path], output_path: Path):
     pd.concat(frame_dfs + video_dfs, ignore_index=True).to_parquet(output_path)
 
 if __name__ == "__main__":
+    # Snakemake only names the log file; a script rule has to redirect into it itself.
+    logs.configure(snakemake.log[0])
+
     # noinspection unbound-local-variable
     main(
         frame_paths=[Path(path) for path in snakemake.input.frame_scores],

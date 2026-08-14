@@ -7,6 +7,7 @@ from deepface import DeepFace
 from tqdm import tqdm
 from typing import TYPE_CHECKING
 
+from meles import logs
 from meles.anonymization.anonymizer import NoAnonymizer, GaussianBlurAnonymizer, BlackBarAnonymizer, \
     PixelationAnonymizer
 
@@ -71,6 +72,9 @@ def main(input_path: Path, output_path: Path, method: str):
     structure_df.to_parquet(output_path)
 
 if __name__ == "__main__":
+    # Snakemake only names the log file; a script rule has to redirect into it itself.
+    logs.configure(snakemake.log[0])
+
     # noinspection unbound-local-variable
     main(
         input_path=Path(snakemake.input.dataset),

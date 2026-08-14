@@ -33,10 +33,10 @@ frame_embedding_methods:
 #- openface
 
 # The video-level embedding models (with implicit parametrization) to be tested.
-video_embedding_methods:
-- dummy1
-- dummy2
-- dummy3
+video_embedding_methods: []
+#- dummy1
+#- dummy2
+#- dummy3
 
 # The video-level aggregation methods (with implicit parametrization) to be tested.
 video_aggregation_methods:

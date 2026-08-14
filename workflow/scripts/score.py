@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 from typing import TYPE_CHECKING, Dict
 
-from meles import scoring
+from meles import logs, scoring
 
 # Fix snakemake typechecking errors
 if TYPE_CHECKING:
@@ -72,6 +72,9 @@ def main(train_path: Path, test_path: Path, split_path: Path, output_path: Path,
     pd.DataFrame(metrics).assign(**method).to_parquet(output_path)
 
 if __name__ == "__main__":
+    # Snakemake only names the log file; a script rule has to redirect into it itself.
+    logs.configure(snakemake.log[0])
+
     # noinspection unbound-local-variable
     main(
         train_path=Path(snakemake.input.train_dataset),
