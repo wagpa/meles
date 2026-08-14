@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 import pandas as pd
 from typing import TYPE_CHECKING
@@ -33,9 +34,9 @@ def main(input_path: Path, output_path: Path, method: str):
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Get the anonymizer based on the provided method key.
-    embedder = EMBEDDERS[method]
+    embedder = EMBEDDERS.get(method)
     if embedder is None:
-        raise ValueError(f"Unknown embedding method: {method}")
+        raise ValueError(f"Unknown frame embedding method: {method}")
 
     # Read the input dataset structure and pass it to the anonymizer
     structure_df = pd.read_parquet(input_path)
@@ -44,9 +45,11 @@ def main(input_path: Path, output_path: Path, method: str):
     # noinspection bad-index
     structure_df["embedding"] = embedder.embed(structure_df_paths)
 
-    # Also, update the frame paths to be relative to the output directory.
+    # Also, update the frame paths to be relative to the output directory. The frames live in the
+    # anonymization output, which is a sibling of this directory, so the relative path has to walk
+    # back up ('..') and Path.relative_to cannot express it.
     # noinspection bad-index
-    structure_df["path"] = [Path(path).relative_to(output_path.parent) for path in structure_df_paths]
+    structure_df["path"] = [os.path.relpath(path, output_path.parent) for path in structure_df_paths]
 
     # Write the full dataset back. It now contains created embedding for each frame.
     structure_df.to_parquet(output_path)
@@ -54,7 +57,7 @@ def main(input_path: Path, output_path: Path, method: str):
 if __name__ == "__main__":
     # noinspection unbound-local-variable
     main(
-        input_path=snakemake.input.dataset,
-        output_path=snakemake.output.dataset,
+        input_path=Path(snakemake.input.dataset),
+        output_path=Path(snakemake.output.dataset),
         method=snakemake.wildcards.get("frame_embedding"),
     )

@@ -25,7 +25,7 @@ def main(frame_paths: List[Path], video_paths: List[Path], output_path: Path):
 if __name__ == "__main__":
     # noinspection unbound-local-variable
     main(
-        frame_paths=snakemake.input.frame_scores,
-        video_paths=snakemake.input.video_scores,
-        output_path=snakemake.output.dataset,
+        frame_paths=[Path(path) for path in snakemake.input.frame_scores],
+        video_paths=[Path(path) for path in snakemake.input.video_scores],
+        output_path=Path(snakemake.output.dataset),
     )

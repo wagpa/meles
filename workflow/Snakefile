@@ -29,7 +29,7 @@ rule anonymize_frame:
     output:
         dataset=RESULT_PATH / "anonymize_frame/{frame_anonymization}/structure.parquet",
     threads: 1
-    log: LOG_PATH / "logs/anonymize_frame/{frame_anonymization}.log"
+    log: LOG_PATH / "anonymize_frame/{frame_anonymization}.log"
     script: "scripts/anonymize_frame.py"
 
 
@@ -37,7 +37,8 @@ rule anonymize_frame:
 # Splits the dataset for k-fold cross validation. It takes the dataset as input and generates a structure
 # file in which each identity-video is assigned a 'fold' (1 to k). This step is split such that altering the
 # splits does not trigger a re-run of the anonymize and (partial) aggregation rules. Only those that actually
-# use the split information.
+# use the split information. The output holds one row per identity-video (not per frame), so that merging it
+# onto a structure never duplicates rows.
 # Input Format: **, identity (str), video (str)
 # Output Format: identity (str), video (str), fold (int)
 rule split:
@@ -48,7 +49,7 @@ rule split:
     params:
         k=SPLIT_K,
         shuffle=SPLIT_SHUFFLE,
-    log: LOG_PATH / "logs/split/general.log"
+    log: LOG_PATH / "split/general.log"
     script: "scripts/k_split.py"
 
 
@@ -94,9 +95,12 @@ rule aggregate_video:
 
 # Aggregates all video embeddings of an identity into one or more (aggregated) embeddings. This removes the video reference
 # as multiple videos are potentially combined into one. This takes the output from 'aggregate_video' (frame-wise embedding).
+# One gallery is built per held-out fold: the rows tagged fold=f aggregate every video of an identity *except* those in
+# fold f, which are the queries 'score' uses for that fold. 'fold' therefore names the held-out fold, not the fold the
+# aggregated videos belong to.
 # Input Format (dataset): **, identity (str), video (str), embedding (float[])
 # Input Format (k_split): identity (str), video (str), fold (int)
-# Output Format: **, fold (int), embedding (float[])
+# Output Format: identity (str), fold (int), embedding (float[])
 rule aggregate_frame_identity:
     input:
         dataset=RESULT_PATH / "aggregate_video/{frame_anonymization}/{frame_embedding}/{video_aggregation}/structure.parquet",
@@ -120,7 +124,8 @@ use rule aggregate_frame_identity as aggregate_video_identity with:
 
 
 # Scores the recognition accuracy for each fold. It uses the identity aggregation as the gallery (train) and the video
-# aggregation as the query (test).
+# aggregation as the query (test). Fold f queries the videos of fold f against the gallery built from the other k-1 folds,
+# so both sides are selected on the same 'fold' value.
 # Also injects the wildcard combination into the score to be trackable.
 # Input (train_dataset): identity (str), embedding (float[]), fold (int)
 # Input (test_dataset): identity (str), video (str), embedding (float[])

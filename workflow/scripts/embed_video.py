@@ -13,10 +13,13 @@ if TYPE_CHECKING:
 # Configure the module logger. Logs are passed into the Snakemake configured logfile.
 logger = logging.getLogger(__name__)
 
+# TODO add real video-level embedders. Until then every key listed under 'video_embedding_methods'
+# in the config maps to a frame-level stand-in so the branch is wired up end to end.
 # noinspection SpellCheckingInspection
 EMBEDDERS = {
-    # TODO add a real embedder
-    "arcface": DeepFaceRecognizer(model_name="ArcFace"),
+    "dummy1": DeepFaceRecognizer(model_name="ArcFace"),
+    "dummy2": DeepFaceRecognizer(model_name="SFace"),
+    "dummy3": DeepFaceRecognizer(model_name="GhostFaceNet"),
 }
 
 def main(input_path: Path, output_path: Path, method: str):
@@ -25,15 +28,16 @@ def main(input_path: Path, output_path: Path, method: str):
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Get the anonymizer based on the provided method key.
-    embedder = EMBEDDERS[method]
+    embedder = EMBEDDERS.get(method)
     if embedder is None:
         raise ValueError(f"Unknown video embedding method: {method}")
 
-    # Read the input dataset structure and pass it to the anonymizer
+    # Read the input dataset structure and pass it to the anonymizer. The frame paths are relative
+    # to the input structure file, so they are resolved against its directory before being read.
     structure_df = pd.read_parquet(input_path)
     structure_df = (
         structure_df.groupby(["identity", "video"])["path"]
-        .apply(lambda paths: embedder.embed(paths.to_list()))
+        .apply(lambda paths: embedder.embed([str(input_path.parent / path) for path in paths]))
         .explode()
         .rename("embedding")
         .reset_index()
@@ -47,7 +51,7 @@ def main(input_path: Path, output_path: Path, method: str):
 if __name__ == "__main__":
     # noinspection unbound-local-variable
     main(
-        input_path=snakemake.input.dataset,
-        output_path=snakemake.output.dataset,
-        method=snakemake.wildcards.get("frame_embedding"),
+        input_path=Path(snakemake.input.dataset),
+        output_path=Path(snakemake.output.dataset),
+        method=snakemake.wildcards.get("video_embedding"),
     )

@@ -23,16 +23,23 @@ def main(train_path: Path, test_path: Path, split_path: Path, output_path: Path,
     test_df = pd.read_parquet(test_path)
     split_df = pd.read_parquet(split_path)
 
-    # Add the split information to the test data.
+    # Add the split information to the test data. The split holds one row per identity-video, so
+    # the merge never duplicates a query embedding.
     test_df = test_df.merge(split_df, on=['identity', 'video'], how='left')
 
     # Score each fold separately
     metrics = []
-    for k in range(split_df["fold"].max()):
-        # Filter the dataframes to only include the rows with the correct folds.
-        # For each fold, we use the matching index as the train set and the rest as test sets.
-        train_k_df = train_df[train_df["fold"] == (k + 1)]
-        test_k_df = test_df[test_df["fold"] != (k + 1)]
+    for fold in sorted(split_df["fold"].unique()):
+        # Every fold is held out once: its videos are the queries, and the gallery is the one
+        # 'aggregate_identity' built from the remaining k-1 folds (its 'fold' column names the
+        # held-out fold, so both sides select on the same value).
+        train_k_df = train_df[train_df["fold"] == fold]
+        test_k_df = test_df[test_df["fold"] == fold]
+        if train_k_df.empty or test_k_df.empty:
+            raise ValueError(
+                f"Fold {fold} has an empty gallery ({len(train_k_df)} rows) or query set "
+                f"({len(test_k_df)} rows); check that both sides tag the same fold"
+            )
 
         # Collect the embeddings. They match the 'y_train' labels by index.
         # Then, fit the classifier.
@@ -57,18 +64,20 @@ def main(train_path: Path, test_path: Path, split_path: Path, output_path: Path,
         video_scores, y_true = scoring.pool_per_video(score_matrix, keys)
         metrics_k = scoring.top_k_accuracies(y_true, video_scores, classes)
         metrics_k["frame-top-1"] = scoring.row_accuracy(score_matrix, y_test, classes)
+        metrics_k["fold"] = int(fold)
         metrics.append(metrics_k)
 
-    # Store the results
-    pd.DataFrame(metrics).to_parquet(output_path)
+    # Store the results, tagged with the wildcard combination that produced them. Without the tag
+    # the rows are indistinguishable once 'collect' concatenates every point of the grid.
+    pd.DataFrame(metrics).assign(**method).to_parquet(output_path)
 
 if __name__ == "__main__":
     # noinspection unbound-local-variable
     main(
-        train_path=snakemake.input.train_dataset,
-        test_path=snakemake.input.test_dataset,
-        split_path=snakemake.input.k_split,
-        output_path=snakemake.output.dataset,
+        train_path=Path(snakemake.input.train_dataset),
+        test_path=Path(snakemake.input.test_dataset),
+        split_path=Path(snakemake.input.k_split),
+        output_path=Path(snakemake.output.dataset),
         method={
             "frame_anonymization_method": snakemake.wildcards.get("frame_anonymization"),
             "frame_embedding_method": snakemake.wildcards.get("frame_embedding"),

@@ -31,7 +31,7 @@ def main(input_path: Path, output_path: Path, method: str):
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Get the anonymizer based on the provided method key.
-    anonymizer = ANONYMIZERS[method]
+    anonymizer = ANONYMIZERS.get(method)
     if anonymizer is None:
         raise ValueError(f"Unknown anonymization method: {method}")
 
@@ -73,7 +73,7 @@ def main(input_path: Path, output_path: Path, method: str):
 if __name__ == "__main__":
     # noinspection unbound-local-variable
     main(
-        input_path=snakemake.input.dataset,
-        output_path=snakemake.output.dataset,
+        input_path=Path(snakemake.input.dataset),
+        output_path=Path(snakemake.output.dataset),
         method=snakemake.wildcards.get("frame_anonymization"),
     )
