@@ -5,7 +5,7 @@ import pandas as pd
 from typing import TYPE_CHECKING
 
 from meles import logs
-from meles.recognizer.deepface import DeepFaceRecognizer
+from meles.recognizer.deepface import DeepFaceFrameEmbedder
 
 # Fix snakemake typechecking errors
 if TYPE_CHECKING:
@@ -17,16 +17,16 @@ logger = logging.getLogger(__name__)
 
 # noinspection SpellCheckingInspection
 EMBEDDERS = {
-    "arcface": DeepFaceRecognizer(model_name="ArcFace"),
-    "vggface": DeepFaceRecognizer(model_name="VGG-Face"),
-    "facenet": DeepFaceRecognizer(model_name="Facenet"),
-    "facenet512": DeepFaceRecognizer(model_name="Facenet512"),
-    "openface": DeepFaceRecognizer(model_name="OpenFace"),
-    "deepface": DeepFaceRecognizer(model_name="DeepFace"),
-    "deepid": DeepFaceRecognizer(model_name="DeepID"),
-    "dlib": DeepFaceRecognizer(model_name="Dlib"),
-    "sface": DeepFaceRecognizer(model_name="SFace"),
-    "ghostfacenet": DeepFaceRecognizer(model_name="GhostFaceNet"),
+    "arcface": DeepFaceFrameEmbedder(model_name="ArcFace"),
+    "vggface": DeepFaceFrameEmbedder(model_name="VGG-Face"),
+    "facenet": DeepFaceFrameEmbedder(model_name="Facenet"),
+    "facenet512": DeepFaceFrameEmbedder(model_name="Facenet512"),
+    "openface": DeepFaceFrameEmbedder(model_name="OpenFace"),
+    "deepface": DeepFaceFrameEmbedder(model_name="DeepFace"),
+    "deepid": DeepFaceFrameEmbedder(model_name="DeepID"),
+    "dlib": DeepFaceFrameEmbedder(model_name="Dlib"),
+    "sface": DeepFaceFrameEmbedder(model_name="SFace"),
+    "ghostfacenet": DeepFaceFrameEmbedder(model_name="GhostFaceNet"),
 }
 
 def main(input_path: Path, output_path: Path, method: str):

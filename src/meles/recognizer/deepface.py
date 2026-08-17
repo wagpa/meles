@@ -2,10 +2,10 @@ from deepface import DeepFace
 from tqdm.auto import tqdm
 
 from meles.common import Frames, OptEmbeddings
-from meles.recognizer.recognizer import Recognizer
+from meles.recognizer.embedder import Embedder
 
 
-class DeepFaceRecognizer(Recognizer):
+class DeepFaceFrameEmbedder(Embedder):
     model_name: str = "ArcFace"
 
     def __init__(
