@@ -3,7 +3,7 @@
   <component name="Black">
     <option name="sdkName" value="uv (meles)" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="uv (meles)" project-jdk-type="Python SDK">
+  <component name="ProjectRootManager" version="2" languageLevel="JDK_26" project-jdk-name="$PROJECT_DIR$/.venv" project-jdk-type="Python SDK">
     <output url="file://$PROJECT_DIR$/out" />
   </component>
 </project>
