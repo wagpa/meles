@@ -1,0 +1,10 @@
+dataset: data/ytfaces_smoke.parquet
+result_dir: results_smoke
+log_dir: logs_smoke
+split_k: 3
+split_shuffle: True
+anonymization_methods: [none, gaussianblur, blackbar, pixelation]
+frame_embedding_methods: [sface, ghostfacenet, arcface]
+video_embedding_methods: []
+video_aggregation_methods: [none, pooling_mean, consensus_beta1]
+identity_aggregation_methods: [none, pooling_mean, consensus_beta1]

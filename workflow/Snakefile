@@ -28,7 +28,10 @@ rule anonymize_frame:
         dataset=DATASET_PATH,
     output:
         dataset=RESULT_PATH / "anonymize_frame/{frame_anonymization}/structure.parquet",
-    threads: 1
+    # There are only as many jobs here as there are anonymization methods, so per-job threads
+    # are the only way to use the whole machine. The scripts pass this budget on to OpenCV and
+    # ONNX Runtime, both of which would otherwise each grab every core and contend.
+    threads: 3
     log: LOG_PATH / "anonymize_frame/{frame_anonymization}.log"
     script: "scripts/anonymize_frame.py"
 
@@ -75,6 +78,7 @@ rule embed_frame:
         dataset=RESULT_PATH / "anonymize_frame/{frame_anonymization}/structure.parquet",
     output:
         dataset=RESULT_PATH / "embed_frame/{frame_anonymization}/{frame_embedding}/structure.parquet",
+    threads: 4
     log: LOG_PATH / "embed_frame/{frame_anonymization}/{frame_embedding}.log"
     script: "scripts/embed_frame.py"
 

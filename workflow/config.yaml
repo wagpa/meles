@@ -21,16 +21,12 @@ anonymization_methods:
 - blackbar
 - pixelation
 
-# The frame-level embedding models (with implicit parametrization) to be tested.
+# The frame-level embedding models (with implicit parametrization) to be tested. Every entry
+# needs a matching key in the EMBEDDERS dict in workflow/scripts/embed_frame.py.
 frame_embedding_methods:
 - sface
 - ghostfacenet
 - arcface
-#- vggface
-#- facenet512
-#- facenet
-#- deepid
-#- openface
 
 # The video-level embedding models (with implicit parametrization) to be tested.
 video_embedding_methods: []

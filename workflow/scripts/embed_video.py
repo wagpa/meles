@@ -3,8 +3,9 @@ from pathlib import Path
 import pandas as pd
 from typing import TYPE_CHECKING
 
-from meles import logs
-from meles.recognizer.deepface import DeepFaceRecognizer
+from meles import logs, runtime
+from meles.recognizer import models
+from meles.recognizer.frame import FrameEmbedder
 
 # Fix snakemake typechecking errors
 if TYPE_CHECKING:
@@ -18,9 +19,9 @@ logger = logging.getLogger(__name__)
 # in the config maps to a frame-level stand-in so the branch is wired up end to end.
 # noinspection SpellCheckingInspection
 EMBEDDERS = {
-    "dummy1": DeepFaceRecognizer(model_name="ArcFace"),
-    "dummy2": DeepFaceRecognizer(model_name="SFace"),
-    "dummy3": DeepFaceRecognizer(model_name="GhostFaceNet"),
+    "dummy1": FrameEmbedder(models.ARCFACE),
+    "dummy2": FrameEmbedder(models.SFACE),
+    "dummy3": FrameEmbedder(models.GHOSTFACENET),
 }
 
 def main(input_path: Path, output_path: Path, method: str):
@@ -52,6 +53,9 @@ def main(input_path: Path, output_path: Path, method: str):
 if __name__ == "__main__":
     # Snakemake only names the log file; a script rule has to redirect into it itself.
     logs.configure(snakemake.log[0])
+    threads = runtime.configure_threads(snakemake.threads)
+    for embedder in EMBEDDERS.values():
+        embedder.threads = threads
 
     # noinspection unbound-local-variable
     main(

@@ -4,8 +4,9 @@ from pathlib import Path
 import pandas as pd
 from typing import TYPE_CHECKING
 
-from meles import logs
-from meles.recognizer.deepface import DeepFaceFrameEmbedder
+from meles import logs, runtime
+from meles.recognizer import models
+from meles.recognizer.frame import FrameEmbedder
 
 # Fix snakemake typechecking errors
 if TYPE_CHECKING:
@@ -15,18 +16,14 @@ if TYPE_CHECKING:
 # Configure the module logger. Logs are passed into the Snakemake configured logfile.
 logger = logging.getLogger(__name__)
 
+# Every key listed under 'frame_embedding_methods' in the config needs an entry here.
+# Constructing an embedder is free: the weights are downloaded and the ONNX session is built
+# on the first call to embed(), so a job only ever loads the one model it was asked for.
 # noinspection SpellCheckingInspection
 EMBEDDERS = {
-    "arcface": DeepFaceFrameEmbedder(model_name="ArcFace"),
-    "vggface": DeepFaceFrameEmbedder(model_name="VGG-Face"),
-    "facenet": DeepFaceFrameEmbedder(model_name="Facenet"),
-    "facenet512": DeepFaceFrameEmbedder(model_name="Facenet512"),
-    "openface": DeepFaceFrameEmbedder(model_name="OpenFace"),
-    "deepface": DeepFaceFrameEmbedder(model_name="DeepFace"),
-    "deepid": DeepFaceFrameEmbedder(model_name="DeepID"),
-    "dlib": DeepFaceFrameEmbedder(model_name="Dlib"),
-    "sface": DeepFaceFrameEmbedder(model_name="SFace"),
-    "ghostfacenet": DeepFaceFrameEmbedder(model_name="GhostFaceNet"),
+    "sface": FrameEmbedder(models.SFACE),
+    "arcface": FrameEmbedder(models.ARCFACE),
+    "ghostfacenet": FrameEmbedder(models.GHOSTFACENET),
 }
 
 def main(input_path: Path, output_path: Path, method: str):
@@ -48,9 +45,23 @@ def main(input_path: Path, output_path: Path, method: str):
 
     # Also, update the frame paths to be relative to the output directory. The frames live in the
     # anonymization output, which is a sibling of this directory, so the relative path has to walk
-    # back up ('..') and Path.relative_to cannot express it.
+    # back up ('..') and Path.relative_to cannot express it. This has to happen before any rows
+    # are dropped, because it assigns a list positionally and so needs the original row count.
     # noinspection bad-index
     structure_df["path"] = [os.path.relpath(path, output_path.parent) for path in structure_df_paths]
+
+    # The embedder embeds the whole frame when it finds no face, so this should never fire.
+    # It is a guard rather than a formality: the aggregators build a float matrix out of a
+    # whole group at once, so a single None in a group raises there instead of here, several
+    # rules downstream of the job that actually produced it.
+    missing = int(structure_df["embedding"].isna().sum())
+    if missing:
+        logger.warning("Dropping frames without an embedding", extra={
+            "method": method,
+            "missing": missing,
+            "len": len(structure_df),
+        })
+        structure_df = structure_df.dropna(subset=["embedding"]).reset_index(drop=True)
 
     # Write the full dataset back. It now contains created embedding for each frame.
     structure_df.to_parquet(output_path)
@@ -58,6 +69,9 @@ def main(input_path: Path, output_path: Path, method: str):
 if __name__ == "__main__":
     # Snakemake only names the log file; a script rule has to redirect into it itself.
     logs.configure(snakemake.log[0])
+    threads = runtime.configure_threads(snakemake.threads)
+    for embedder in EMBEDDERS.values():
+        embedder.threads = threads
 
     # noinspection unbound-local-variable
     main(

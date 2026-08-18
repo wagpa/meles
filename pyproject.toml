@@ -6,13 +6,23 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "click>=8.4.2",
-    "deepface>=0.0.100",
     "fastparquet>=2026.5.0",
     "matplotlib>=3.11.0",
     "numpy>=2.5.1",
-    # opencv-python 5 no longer ships the bundled Haar cascade XMLs, which the
-    # DeepFace "opencv" detector backend in workflow/scripts/anonymize.py needs.
-    "opencv-python>=4.13.0.92,<5",
+    "onnx>=1.17.0",
+    # onnxruntime-gpu 1.27 switched the PyPI wheels from CUDA 12 to CUDA 13, so from
+    # that version on it depends on nvidia-cudnn-cu13 -- the very package torch cu130
+    # already pulls in. An older (CUDA 12) build would put a second libcudnn.so.9 into
+    # site-packages alongside torch's, which is the class of conflict that made
+    # TensorFlow unusable here in the first place. Hence the hard 1.29 floor.
+    "onnxruntime-gpu>=1.29.0",
+    # cv2.FaceDetectorYN (YuNet) and cv2.FaceRecognizerSF both live in the main
+    # opencv-python package, so opencv-contrib-python is not needed. Kept below 5
+    # deliberately: OpenCV 5 replaces the whole DNN engine and the YuNet weights we
+    # use (face_detection_yunet_2023mar.onnx) have a fixed input shape, where OpenCV 5
+    # expects the dynamic-shape face_detection_yunet_2026may.onnx. Lifting this bound
+    # is a two-line change once that model is adopted.
+    "opencv-python>=4.14.0.94,<5",
     "pandas==2.3.3",
     "pandas-stubs~=2.3.3",
     "pyarrow>=25.0.0",
@@ -20,8 +30,8 @@ dependencies = [
     "seaborn>=0.13.2",
     "snakemake>=9.23.1",
     "snakevision>=1.1.0",
-    "tensorflow>=2.21.0",
-    "tf-keras>=2.19.0",
+    # Not imported by the pipeline: inference runs on ONNX Runtime. Kept for the
+    # CUDA 13 stack and any future torch-native embedder backend.
     "torch>=2.13.0",
     "torchvision>=0.28.0",
     "tqdm>=4.68.3",
@@ -45,5 +55,18 @@ build-backend = "hatchling.build"
 packages = ["src/meles"]
 include = ["src/meles/py.typed"]
 
+[tool.ruff]
+# The default of 88 was never met by this codebase (its widest existing line is 126), which
+# left 'ruff check' reporting hundreds of line-length violations and so reporting nothing
+# useful. This matches the width the code is actually written to.
+line-length = 120
+
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["src/tests"]
+markers = [
+    "weights: needs the model weights in the cache (downloads them on first run)",
+    "dataset: needs data/ytfaces.parquet and its frames",
+]

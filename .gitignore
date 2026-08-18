@@ -225,3 +225,12 @@ results
 results_old
 logs
 /.snakemake/
+
+# Cached ONNX model weights, downloaded on demand by src/meles/weights.py
+/models/
+# Local uv cache, only used when the default cache directory is not writable
+/.uv-cache/
+
+# Outputs of the scaled-down verification run (workflow/config.smoke.yaml)
+results_smoke
+logs_smoke

@@ -11,7 +11,8 @@ because a job has three independent writers and only ``os.dup2`` catches all of 
 
 - the logging module, which without a handler falls back to writing warnings to stderr,
 - tqdm's progress bars, which write to stderr,
-- TensorFlow/OpenCV, which write to fd 2 from C and never see a ``sys.stderr`` reassignment.
+- OpenCV and ONNX Runtime, which write to fd 2 from C and never see a ``sys.stderr``
+  reassignment.
 """
 
 import logging
