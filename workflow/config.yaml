@@ -48,6 +48,7 @@ video_aggregation_methods:
 - consensus_beta1
 #- consensus_beta5
 #- consensus_beta20
+- normweighted
 
 # The video-level aggregation methods (with implicit parametrization) to be tested.
 identity_aggregation_methods:
@@ -63,3 +64,4 @@ identity_aggregation_methods:
 - consensus_beta1
 #- consensus_beta5
 #- consensus_beta20
+- normweighted

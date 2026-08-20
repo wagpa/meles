@@ -4,7 +4,7 @@ import pandas as pd
 from typing import TYPE_CHECKING
 
 from meles import logs
-from meles.aggregation import clustering, consensus, pooling
+from meles.aggregation import clustering, consensus, pooling, normweighted
 from meles.aggregation.aggregator import NoAggregator
 
 # Fix snakemake typechecking errors
@@ -34,6 +34,7 @@ AGGREGATORS = {
     "consensus_beta1": consensus.ConsensusAggregator(beta=1.0),
     "consensus_beta5": consensus.ConsensusAggregator(beta=5.0),
     "consensus_beta20": consensus.ConsensusAggregator(beta=20.0),
+    "normweighted": normweighted.NormWeightedAggregator(),
 }
 
 def main(input_path: Path, output_path: Path, method: str):
