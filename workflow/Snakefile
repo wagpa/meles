@@ -184,27 +184,36 @@ rule collect_recognition:
     log: LOG_PATH / "collect/recognition.log"
     script: "scripts/collect.py"
 
-# Scores the clustering for each fold. It is applied on the identity aggregation as it natively includes the video_aggregation
-# results as the `none` variant.
-# Input (dataset): identity (str), embedding (float[]), fold (int)
-# Output: fold (int), silhouette_avg (float), ..., frame_anonymization (str),  frame_embedding/video_embedding (str),  video_aggregation/video_embedding (str),  identity_aggregation (str)
+# Scores how well the embeddings cluster into identities. This runs on 'aggregate_video', *before* the identity
+# aggregation, because that is the last stage where an identity still spans several rows: a pooling identity
+# aggregator leaves exactly one embedding per identity, so k == n and every point becomes its own cluster (which
+# is also why 'silhouette_score' raised there). Note there is no {identity_aggregation} axis here at all -- the
+# clustering asks whether the per-video embeddings recover the identity partition, a question the identity
+# aggregation would answer by construction. For the same reason the input carries no 'fold': clustering is
+# unsupervised and needs no gallery/query split, so this is one global fit over every video.
+# Input (dataset): identity (str), video (str), embedding (float[])
+# Output: silhouette_avg (float), adjusted_rand_score (float), n_samples (int), ..., frame_anonymization (str),  frame_embedding/video_embedding (str),  video_aggregation (str)
 rule score_frame_cluster:
     input:
-        dataset=RESULT_PATH / "aggregate_frame_identity/{frame_anonymization}/{frame_embedding}/{video_aggregation}/{identity_aggregation}/structure.parquet",
+        dataset=RESULT_PATH / "aggregate_video/{frame_anonymization}/{frame_embedding}/{video_aggregation}/structure.parquet",
     output:
-        dataset=RESULT_PATH / "score_frame_cluster/{frame_anonymization}/{frame_embedding}/{video_aggregation}/{identity_aggregation}/structure.parquet",
-    log: LOG_PATH / "score_frame_cluster/{frame_anonymization}/{frame_embedding}/{video_aggregation}/{identity_aggregation}.log"
+        dataset=RESULT_PATH / "score_frame_cluster/{frame_anonymization}/{frame_embedding}/{video_aggregation}/structure.parquet",
+    # KMeans is the expensive part: with {video_aggregation} 'none' the input is one row per frame (~130k x 512
+    # on the full dataset) and k is the identity count, so this is not the cheap per-fold scoring 'score_frame' does.
+    threads: 4
+    log: LOG_PATH / "score_frame_cluster/{frame_anonymization}/{frame_embedding}/{video_aggregation}.log"
     script: "scripts/score_cluster.py"
 
 
 # Same as 'score_frame_cluster', but for the video-embedding branch. Shares its script with 'score_frame_cluster'; only
-# the wildcard shape differs (no {video_aggregation} segment).
+# the wildcard shape differs (no {video_aggregation} segment). 'embed_video' is this branch's equivalent of
+# 'aggregate_video': one template per video, which is exactly the shape the clustering needs.
 use rule score_frame_cluster as score_video_cluster with:
     input:
-        dataset=RESULT_PATH / "aggregate_video_identity/{frame_anonymization}/{video_embedding}/{identity_aggregation}/structure.parquet",
+        dataset=RESULT_PATH / "embed_video/{frame_anonymization}/{video_embedding}/structure.parquet",
     output:
-        dataset=RESULT_PATH / "score_video_cluster/{frame_anonymization}/{video_embedding}/{identity_aggregation}/structure.parquet",
-    log: LOG_PATH / "score_video_cluster/{frame_anonymization}/{video_embedding}/{identity_aggregation}.log"
+        dataset=RESULT_PATH / "score_video_cluster/{frame_anonymization}/{video_embedding}/structure.parquet",
+    log: LOG_PATH / "score_video_cluster/{frame_anonymization}/{video_embedding}.log"
 
 
 # Gathers every score_frame_cluster and score_video_cluster result produced across the full parameter grid and concatenates
@@ -216,17 +225,15 @@ use rule score_frame_cluster as score_video_cluster with:
 rule collect_clustering:
     input:
         frame=expand(
-            RESULT_PATH / "score_frame_cluster/{frame_anonymization}/{frame_embedding}/{video_aggregation}/{identity_aggregation}/structure.parquet",
+            RESULT_PATH / "score_frame_cluster/{frame_anonymization}/{frame_embedding}/{video_aggregation}/structure.parquet",
             frame_anonymization=ANONYMIZATIONS,
             frame_embedding=FRAME_EMBEDDINGS,
             video_aggregation=VIDEO_AGGREGATORS,
-            identity_aggregation=IDENTITY_AGGREGATORS,
         ),
         video=expand(
-            RESULT_PATH / "score_video_cluster/{frame_anonymization}/{video_embedding}/{identity_aggregation}/structure.parquet",
+            RESULT_PATH / "score_video_cluster/{frame_anonymization}/{video_embedding}/structure.parquet",
             frame_anonymization=ANONYMIZATIONS,
             video_embedding=VIDEO_EMBEDDINGS,
-            identity_aggregation=IDENTITY_AGGREGATORS,
         ),
     output:
         dataset=RESULT_PATH / "collect/clustering.parquet",
