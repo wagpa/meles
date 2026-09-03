@@ -21,10 +21,10 @@ def main(dataset_paths: list[tuple[str, Path]], output_path: Path):
     if not dataset_paths:
         raise ValueError("No score files to collect; every branch of the grid is empty")
 
-    # Concatenate both result sets, adding 'pipeline' column with either 'frame' or 'video'.
-    # The two branches do not share a column set (one carries 'frame_embedding_method' and
-    # 'video_aggregation_method', the other 'video_embedding_method'), so the union is ragged
-    # and the missing side becomes NaN. That is intended: 'pipeline' says which columns to read.
+    # Concatenate every result set, tagging each row with the input keyword it came through as
+    # 'pipeline'. Only the frame pipeline remains, so that column is constant today; it is kept
+    # because the concatenation is a union over whatever keywords the rule binds, and a second
+    # pipeline with a different column set would otherwise land in the table unlabelled.
     logger.debug("Collecting scores", extra={"files": len(dataset_paths)})
     dfs = [pd.read_parquet(p).assign(pipeline=name) for (name, p) in dataset_paths]
     collected = pd.concat(dfs, ignore_index=True)
@@ -37,7 +37,7 @@ def main(dataset_paths: list[tuple[str, Path]], output_path: Path):
 def named_inputs(inputs) -> list[tuple[str, Path]]:
     """
     Flatten a Snakemake input object into (group name, path) pairs, where the group name is the
-    input keyword ("frame" or "video") that becomes the 'pipeline' tag.
+    input keyword (currently only "frame") that becomes the 'pipeline' tag.
 
     Iterating the input object directly yields bare path strings, not (name, paths) pairs, so it
     has to be walked by name. Two shapes have to be handled: a keyword bound to an ``expand()``

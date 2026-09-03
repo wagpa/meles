@@ -3,8 +3,22 @@ result_dir: results_smoke
 log_dir: logs_smoke
 split_k: 3
 split_shuffle: True
-anonymization_methods: [none, gaussianblur, blackbar, pixelation]
-frame_embedding_methods: [sface, ghostfacenet, arcface]
-video_embedding_methods: []
-video_aggregation_methods: [none, pooling_mean, consensus_beta1]
-identity_aggregation_methods: [none, pooling_mean, consensus_beta1]
+
+# The same shape as the full experiment, with one recognizer and a smaller aggregator sweep.
+experiment:
+  name: smoke
+  samples:
+    frame_anonymizer:
+    - none
+    - gaussianblur
+    - blackbar
+    - pixelation
+    frame_recognizer: arcface
+    frame_aggregator: none
+  gallery:
+    frame_anonymizer:
+    - none
+    frame_aggregator:
+    - none
+    - pooling_mean
+    - consensus_beta1

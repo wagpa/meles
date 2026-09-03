@@ -14,62 +14,72 @@ if TYPE_CHECKING:
 # Configure the module logger. Logs are passed into the Snakemake configured logfile.
 logger = logging.getLogger(__name__)
 
-def main(train_path: Path, test_path: Path, split_path: Path, output_path: Path, method: Dict):
+def main(gallery_path: Path, samples_path: Path, output_path: Path, method: Dict):
     # Crate the output directory if it does not exist
     logger.debug("Generating output directory")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Read the input paths
-    train_df = pd.read_parquet(train_path)
-    test_df = pd.read_parquet(test_path)
-    split_df = pd.read_parquet(split_path)
+    # Read the two legs of the experiment. They are the same videos aggregated under two different
+    # conditions: the gallery is what the attacker holds, the samples are what they get to observe.
+    gallery_df = pd.read_parquet(gallery_path)
+    samples_df = pd.read_parquet(samples_path)
+    if gallery_df.empty or samples_df.empty:
+        raise ValueError(f"Empty leg: gallery has {len(gallery_df)} rows, samples have {len(samples_df)}")
 
-    # Add the split information to the test data. The split holds one row per identity-video, so
-    # the merge never duplicates a query embedding.
-    test_df = test_df.merge(split_df, on=['identity', 'video'], how='left')
+    # The legs may differ in anonymization, recognizer and aggregator, but a cosine gallery only
+    # means anything inside one embedding space. Mismatched recognizers would otherwise surface as
+    # a shape error from deep inside sklearn.
+    gallery_dim = len(gallery_df["embedding"].iloc[0])
+    samples_dim = len(samples_df["embedding"].iloc[0])
+    if gallery_dim != samples_dim:
+        raise ValueError(
+            f"The gallery leg embeds to {gallery_dim} dimensions and the samples leg to {samples_dim}; "
+            "the two legs have to share a frame recognizer to be comparable"
+        )
 
     # Score each fold separately
     metrics = []
-    for fold in sorted(split_df["fold"].unique()):
-        # Every fold is held out once: its videos are the queries, and the gallery is the one
-        # 'aggregate_identity' built from the remaining k-1 folds (its 'fold' column names the
-        # held-out fold, so both sides select on the same value).
-        train_k_df = train_df[train_df["fold"] == fold]
-        test_k_df = test_df[test_df["fold"] == fold]
-        if train_k_df.empty or test_k_df.empty:
+    for fold in sorted(samples_df["fold"].unique()):
+        # Every fold is queried once, against a gallery built from the other k-1 folds. Both legs
+        # were split the same way, so holding the fold out is also what stops a query video from
+        # matching its own, merely differently anonymized, copy in the gallery.
+        gallery_k_df = gallery_df[gallery_df["fold"] != fold]
+        samples_k_df = samples_df[samples_df["fold"] == fold]
+        if gallery_k_df.empty or samples_k_df.empty:
             raise ValueError(
-                f"Fold {fold} has an empty gallery ({len(train_k_df)} rows) or query set "
-                f"({len(test_k_df)} rows); check that both sides tag the same fold"
+                f"Fold {fold} has an empty gallery ({len(gallery_k_df)} rows) or query set "
+                f"({len(samples_k_df)} rows); check that both legs cover the same folds"
             )
 
-        # Collect the embeddings. They match the 'y_train' labels by index.
+        # Collect the embeddings. They match the 'y_gallery' labels by index.
         # Then, fit the classifier.
-        x_train = scoring.stack(train_k_df)
-        y_train = train_k_df["identity"].to_numpy()
-        classifier = scoring.fit_gallery(x_train, y_train)
+        x_gallery = scoring.stack(gallery_k_df)
+        y_gallery = gallery_k_df["identity"].to_numpy()
+        classifier = scoring.fit_gallery(x_gallery, y_gallery)
 
-        # Now generate the scoring matrix for each test row.
-        x_test = scoring.stack(test_k_df)
-        y_test = test_k_df["identity"].to_numpy()
-        n_neighbors = min(scoring.K, len(train_k_df))
-        classes = scoring.label_space(y_train, y_test)
+        # Now generate the scoring matrix for each query row.
+        x_samples = scoring.stack(samples_k_df)
+        y_samples = samples_k_df["identity"].to_numpy()
+        n_neighbors = min(scoring.K, len(gallery_k_df))
+        classes = scoring.label_space(y_gallery, y_samples)
         score_matrix = scoring.vote_matrix(
             classifier,
-            embeddings=x_test,
+            embeddings=x_samples,
             classes=classes,
             n_neighbors=n_neighbors
         )
 
         # Lastly, generate the accuracy scores
-        keys = scoring.video_keys(test_k_df)
+        keys = scoring.video_keys(samples_k_df)
         video_scores, y_true = scoring.pool_per_video(score_matrix, keys)
         metrics_k = scoring.top_k_accuracies(y_true, video_scores, classes)
-        metrics_k["frame-top-1"] = scoring.row_accuracy(score_matrix, y_test, classes)
+        metrics_k["frame-top-1"] = scoring.row_accuracy(score_matrix, y_samples, classes)
         metrics_k["fold"] = int(fold)
         metrics.append(metrics_k)
 
     # Store the results, tagged with the wildcard combination that produced them. Without the tag
-    # the rows are indistinguishable once 'collect' concatenates every point of the grid.
+    # the rows are indistinguishable once 'collect' concatenates every point of the experiment.
+    logger.info("Scored experiment", extra={ **method, "folds": len(metrics) })
     pd.DataFrame(metrics).assign(**method).to_parquet(output_path)
 
 if __name__ == "__main__":
@@ -78,15 +88,15 @@ if __name__ == "__main__":
 
     # noinspection unbound-local-variable
     main(
-        train_path=Path(snakemake.input.train_dataset),
-        test_path=Path(snakemake.input.test_dataset),
-        split_path=Path(snakemake.input.k_split),
+        gallery_path=Path(snakemake.input.gallery_dataset),
+        samples_path=Path(snakemake.input.samples_dataset),
         output_path=Path(snakemake.output.dataset),
         method={
-            "frame_anonymization_method": snakemake.wildcards.get("frame_anonymization"),
-            "frame_embedding_method": snakemake.wildcards.get("frame_embedding"),
-            "video_aggregation_method": snakemake.wildcards.get("video_aggregation"),
-            "video_embedding_method": snakemake.wildcards.get("video_embedding"),
-            "identity_aggregation_method": snakemake.wildcards.get("identity_aggregation"),
+            "gallery_frame_anonymization": snakemake.wildcards.get("gallery_frame_anonymization"),
+            "gallery_frame_embedding": snakemake.wildcards.get("gallery_frame_embedding"),
+            "gallery_frame_aggregation": snakemake.wildcards.get("gallery_frame_aggregation"),
+            "samples_frame_anonymization": snakemake.wildcards.get("samples_frame_anonymization"),
+            "samples_frame_embedding": snakemake.wildcards.get("samples_frame_embedding"),
+            "samples_frame_aggregation": snakemake.wildcards.get("samples_frame_aggregation"),
         }
     )

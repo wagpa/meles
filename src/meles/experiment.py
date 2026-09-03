@@ -41,8 +41,8 @@ def parse_experiment(spec: dict[str, Any]) -> Experiment:
 
     return Experiment(
         name,
-        ExperimentLeg(*samples_specs),
-        ExperimentLeg(*gallery_specs),
+        ExperimentLeg(**samples_specs),
+        ExperimentLeg(**gallery_specs),
     )
 
 

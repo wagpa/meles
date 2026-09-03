@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from meles.runtime import logs
 from meles.aggregation import clustering, consensus, pooling, normweighted
-from meles.aggregation.aggregator import Aggregator, NoAggregator
+from meles.aggregation.aggregator import NoAggregator
 
 # Fix snakemake typechecking errors
 if TYPE_CHECKING:
@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 # Configure the module logger. Logs are passed into the Snakemake configured logfile.
 logger = logging.getLogger(__name__)
 
-# Every key listed under 'identity_aggregation_methods' in the config needs an entry here.
+# Every 'frame_aggregator' named by an experiment leg in the config needs an entry here.
 # noinspection SpellCheckingInspection
 AGGREGATORS = {
     "none": NoAggregator(),
@@ -37,23 +37,7 @@ AGGREGATORS = {
     "normweighted": normweighted.NormWeightedAggregator(),
 }
 
-def identity_level(aggregator: Aggregator) -> Aggregator:
-    """Adapt a video-level aggregator to the identity level.
-
-    ``min_cluster_size`` is an outlier filter over *frame* embeddings. At this level the input is
-    the handful of centroids 'aggregate_video' produced per video, so re-applying the filter drops
-    every cluster and leaves the identity without any gallery embedding at all. Keep the clustering
-    geometry, drop the size filter.
-    """
-    if isinstance(aggregator, clustering.ClusteringAggregator):
-        return type(aggregator)(
-            distance_threshold=aggregator.distance_threshold,
-            n_clusters=aggregator.n_clusters,
-            min_cluster_size=0,
-        )
-    return aggregator
-
-def main(input_path: Path, split_path: Path, output_path: Path, method: str, identity: bool = True):
+def main(input_path: Path, split_path: Path, output_path: Path, method: str):
     # Crate the output directory if it does not exist
     logger.debug("Generating output directory")
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -61,53 +45,49 @@ def main(input_path: Path, split_path: Path, output_path: Path, method: str, ide
     # Get the aggregator based on the provided method key.
     aggregator = AGGREGATORS.get(method)
     if aggregator is None:
-        raise ValueError(f"Unknown embedding aggregation method: {method}")
-    aggregator = identity_level(aggregator) if identity else aggregator
+        raise ValueError(f"Unknown frame aggregation method: {method}")
 
-    # Read the input dataset structure and join it with the split. The split holds one row per
-    # identity-video, so the merge never duplicates an embedding.
+    # Read the input dataset structure and attach the fold of every video. The split holds one row
+    # per identity-video, so the merge never duplicates an embedding. The fold only rides along:
+    # this rule aggregates every video the same way, and 'score' is what decides which folds make
+    # up a gallery and which are queried against it.
     split_df = pd.read_parquet(split_path)
-    structure_df = pd.read_parquet(input_path)
-    structure_df = structure_df.merge(split_df, on=['identity', 'video'], how='left')
+    structure_df = pd.read_parquet(input_path).merge(split_df, on=["identity", "video"], how="left")
 
-    # A video missing from the split keeps a null fold, and 'fold != f' holds for null in every
-    # iteration below, which would quietly put it into every gallery including the held-out one.
+    # A video missing from the split keeps a null fold, which no fold comparison in 'score' selects,
+    # so it would silently drop out of the experiment instead of failing here.
     unassigned = structure_df["fold"].isna().sum()
     if unassigned:
         raise ValueError(f"{unassigned} rows have no fold assigned by the split")
 
-    # Build one gallery per held-out fold: the gallery for fold f aggregates every video of an
-    # identity *except* those in fold f, which is the fold that 'score' queries with. The 'fold'
-    # column of the output therefore names the held-out fold, not the fold the videos came from.
-    folds = sorted(split_df["fold"].unique())
-    galleries = []
-    group_by = ["identity"] if identity else ["identity", "video"]
-    for fold in folds:
-        logger.debug("Aggregating identities for held-out fold", extra={ "fold": int(fold) })
-        gallery_df = (
-            structure_df[structure_df["fold"] != fold]
-            .groupby(group_by)["embedding"]
-            .apply(lambda embeddings: aggregator.aggregate(embeddings.to_list()))
-            .explode()
-            .rename("embedding")
-            .reset_index()
-            .dropna(subset=["embedding"])
-        )
-        gallery_df["fold"] = fold
-        galleries.append(gallery_df)
+    # Collapse the frames of every identity-video into the one or more embeddings the aggregator
+    # returns. This drops the frame reference, as several frames are potentially combined into one.
+    # The fold is constant within a video, so grouping on it carries it into the output for free.
+    # An aggregator returns a list, hence the explode; a clustering aggregator whose clusters all
+    # fall below 'min_cluster_size' returns none at all, which explodes to a null row and is dropped.
+    logger.debug("Aggregating frames", extra={ "method": method, "len": len(structure_df) })
+    videos = structure_df.groupby(["identity", "video"]).ngroups
+    structure_df = (
+        structure_df.groupby(["identity", "video", "fold"])["embedding"]
+        .apply(lambda embeddings: aggregator.aggregate(embeddings.to_list()))
+        .explode()
+        .rename("embedding")
+        .reset_index()
+        .dropna(subset=["embedding"])
+    )
 
-        # An identity without a single gallery embedding can never be matched, so it silently
-        # caps the achievable accuracy. Report it instead of letting it disappear.
-        lost = set(structure_df["identity"].unique()) - set(gallery_df["identity"].unique())
-        if lost:
-            logger.warning("Identities without a gallery embedding", extra={
-                "fold": int(fold),
-                "len": len(lost),
-                "identities": sorted(lost),
-            })
-    structure_df = pd.concat(galleries, ignore_index=True)
+    # A video that lost every embedding can never be matched, so it silently caps the achievable
+    # accuracy. Report it instead of letting it disappear.
+    lost = videos - structure_df.groupby(["identity", "video"]).ngroups
+    if lost:
+        logger.warning("Videos without an aggregated embedding", extra={
+            "method": method,
+            "lost": lost,
+            "videos": videos,
+        })
 
-    # Write the full dataset back. It now contains aggregated embeddings for each identity and fold.
+    # Write the full dataset back. It now contains the aggregated embeddings per identity-video.
+    logger.info("Aggregated frames", extra={ "method": method, "len": len(structure_df) })
     structure_df[["identity", "video", "fold", "embedding"]].to_parquet(output_path)
 
 if __name__ == "__main__":
@@ -119,6 +99,5 @@ if __name__ == "__main__":
         input_path=Path(snakemake.input.dataset),
         split_path=Path(snakemake.input.k_split),
         output_path=Path(snakemake.output.dataset),
-        method=snakemake.wildcards.get("identity_aggregation"),
-        scope="video" # or "identity"
+        method=snakemake.wildcards.get("frame_aggregation"),
     )

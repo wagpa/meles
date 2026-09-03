@@ -22,10 +22,8 @@ class Embedder(ABC):
         """
         The abstract class for recognizers. It embeds a list f frames into embeddings.
 
-        Frame-level embedders return one embedding per input frame (None where no face was found),
-        so the result lines up with the input row-by-row. Video-level embedders instead treat the
-        whole sequence as a single video and return one embedding per clip they sampled from it,
-        which may be any number — 'embed_video.py' explodes the result into one row per embedding.
+        An embedder returns one embedding per input frame (None where no face was found), so the
+        result lines up with the input row-by-row.
 
         :param frames: The list of frames to embed with shape (num_frames, frame_dim)
         :return: The generated embeddings with shape (num_embeddings, embedding_dim)

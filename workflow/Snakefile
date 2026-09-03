@@ -14,10 +14,19 @@ SPLIT_SHUFFLE = bool(config["split_shuffle"])
 
 EXPERIMENT = parse_experiment(config["experiment"])
 
-ANONYMIZATIONS = config["anonymization_methods"]
-FRAME_EMBEDDINGS = config["frame_embedding_methods"]
-VIDEO_AGGREGATORS = config["video_aggregation_methods"]
-IDENTITY_AGGREGATORS = config["identity_aggregation_methods"]
+# Every wildcard names one method and so is a single path segment. Pinning them says so:
+# 'score_experiment' puts six of them into one path, and without a constraint Snakemake is free to
+# read a '/' into any of them and split that path somewhere other than at the '-' separator.
+wildcard_constraints:
+    frame_anonymization=r"[^/]+",
+    frame_embedding=r"[^/]+",
+    frame_aggregation=r"[^/]+",
+    gallery_frame_anonymization=r"[^/]+",
+    gallery_frame_embedding=r"[^/]+",
+    gallery_frame_aggregation=r"[^/]+",
+    samples_frame_anonymization=r"[^/]+",
+    samples_frame_embedding=r"[^/]+",
+    samples_frame_aggregation=r"[^/]+",
 
 
 # Anonymizes the dataset for each anonymization method. It takes the dataset as input and generates a
@@ -70,7 +79,15 @@ rule embed_frame:
     script: "scripts/embed_frame.py"
 
 
-# TODO add docs
+# Aggregates all frame embeddings of an identity-video into one or more (aggregated) embeddings. This removes the frame
+# reference as multiple frames are potentially combined into one, and is the step the experiment is actually about: it
+# is where many anonymized observations of one video are allowed to reinforce each other.
+# The fold of every video is merged in here (this is the only rule that reads the split) but nothing is held out yet --
+# every video is aggregated the same way, and 'score_experiment' is what decides which folds form a gallery and which
+# are queried against it. That keeps one aggregation reusable as either side of any pairing.
+# Input Format (dataset): **, identity (str), video (str), embedding (float[])
+# Input Format (k_split): identity (str), video (str), fold (int)
+# Output Format: identity (str), video (str), fold (int), embedding (float[])
 rule aggregate_embedding:
     input:
         dataset=RESULT_PATH / "embed_frame/{frame_anonymization}/{frame_embedding}/structure.parquet",
@@ -81,7 +98,16 @@ rule aggregate_embedding:
     script: "scripts/aggregate_embedding.py"
 
 
-# TODO add docs
+# Scores one pairing of the experiment: the 'gallery' leg is what the attacker holds, the 'samples' leg is what they get
+# to observe. Both legs are the same videos under two independently chosen conditions, which is the point -- the
+# interesting question is a clear gallery against anonymized samples, and that is just one pairing among the ones the
+# two legs span. The two paths are joined by a literal '-' so the six wildcards stay readable as gallery-against-samples.
+# Fold f of the samples is queried against a gallery built from the other k-1 folds. Both sides carry the fold from
+# 'aggregate_embedding', so the split is not read again; holding the fold out is also what stops a query video from
+# matching its own, merely differently anonymized, copy in the gallery.
+# Input (gallery_dataset): identity (str), video (str), fold (int), embedding (float[])
+# Input (samples_dataset): identity (str), video (str), fold (int), embedding (float[])
+# Output: fold (int), top-1 (float), ..., gallery_frame_anonymization (str), ..., samples_frame_aggregation (str)
 rule score_experiment:
     input:
         gallery_dataset=RESULT_PATH / "aggregate_embedding/{gallery_frame_anonymization}/{gallery_frame_embedding}/{gallery_frame_aggregation}/structure.parquet",
@@ -92,17 +118,22 @@ rule score_experiment:
     script: "scripts/score.py"
 
 
-# TODO add docs
+# Gathers every scored pairing of the experiment into one comparison table. 'expand' takes the full cross product of
+# the two legs, which is the experiment: every gallery the attacker might hold, against every set of samples they might
+# observe. Each leg contributes its own three axes, so a leg pinned to a single method (the config accepts a bare string
+# for that) contributes one value and does not widen the grid.
+# Input (flatten(*)): ...
+# Output: pipeline (str), ...
 rule collect_recognition:
     input:
         frame=expand(
             RESULT_PATH / "score_frame/{gallery_frame_anonymization}/{gallery_frame_embedding}/{gallery_frame_aggregation}/-/{samples_frame_anonymization}/{samples_frame_embedding}/{samples_frame_aggregation}/structure.parquet",
-            gallery_frame_anonymization=EXPERIMENT.samples.frame_anonymizer,
-            gallery_frame_embedding=EXPERIMENT.samples.frame_recognizer,
-            gallery_frame_aggregation=EXPERIMENT.samples.frame_aggregation,
-            samples_frame_anonymization=EXPERIMENT.gallery.frame_aggregator,
-            samples_frame_embedding=EXPERIMENT.gallery.frame_recognizer,
-            samples_frame_aggregation=EXPERIMENT.gallery.frame_aggregator,
+            gallery_frame_anonymization=EXPERIMENT.gallery.frame_anonymizer,
+            gallery_frame_embedding=EXPERIMENT.gallery.frame_recognizer,
+            gallery_frame_aggregation=EXPERIMENT.gallery.frame_aggregator,
+            samples_frame_anonymization=EXPERIMENT.samples.frame_anonymizer,
+            samples_frame_embedding=EXPERIMENT.samples.frame_recognizer,
+            samples_frame_aggregation=EXPERIMENT.samples.frame_aggregator,
         ),
     output:
         dataset=RESULT_PATH / EXPERIMENT.name / "recognition.parquet",
