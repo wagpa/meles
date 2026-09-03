@@ -21,11 +21,15 @@ SCRIPTS = Path("workflow/scripts")
 CONFIG = Path("workflow/config.yaml")
 
 # Each workflow script's registry, and the experiment-leg field naming the methods it must cover.
+# 'aggregate_embedding' is not here: its keys carry a scope ('{video|identity}_{method}'), so they
+# are checked through the script's own 'resolve' rather than against the bare registry.
 REGISTRIES = {
     "anonymize_frame": ("ANONYMIZERS", "frame_anonymizer"),
     "embed_frame": ("EMBEDDERS", "frame_recognizer"),
-    "aggregate_embedding": ("AGGREGATORS", "frame_aggregator"),
 }
+
+# Every script that has to import, whether or not the configured experiment currently reaches it.
+ALL_SCRIPTS = [*REGISTRIES, "aggregate_embedding"]
 
 
 def load_script(name: str) -> ModuleType:
@@ -50,7 +54,7 @@ def experiment() -> Experiment:
     return parse_experiment(yaml.safe_load(CONFIG.read_text())["experiment"])
 
 
-@pytest.mark.parametrize("script", sorted(REGISTRIES))
+@pytest.mark.parametrize("script", sorted(ALL_SCRIPTS))
 def test_script_imports(script: str) -> None:
     """Every script must import, whether or not the configured experiment currently reaches it."""
     assert load_script(script) is not None
@@ -67,6 +71,16 @@ def test_experiment_methods_have_a_registry_entry(script: str, leg: str, experim
     assert not missing, (
         f"experiment.{leg}.{field} in {CONFIG} lists {missing}, which {script}.{attribute} has no entry for"
     )
+
+
+@pytest.mark.parametrize("leg", ["samples", "gallery"])
+def test_frame_aggregators_name_a_scope_and_a_method(leg: str, experiment: Experiment) -> None:
+    """Every configured aggregator has to resolve, i.e. name both a known scope and a known method."""
+    resolve = load_script("aggregate_embedding").resolve
+
+    for method in getattr(experiment, leg).frame_aggregator:
+        group_by, aggregator = resolve(method)
+        assert group_by and aggregator is not None
 
 
 def test_embedder_registries_cover_every_model() -> None:

@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from meles.runtime import logs
 from meles.aggregation import clustering, consensus, pooling, normweighted
-from meles.aggregation.aggregator import NoAggregator
+from meles.aggregation.aggregator import Aggregator, NoAggregator
 
 # Fix snakemake typechecking errors
 if TYPE_CHECKING:
@@ -14,6 +14,24 @@ if TYPE_CHECKING:
 
 # Configure the module logger. Logs are passed into the Snakemake configured logfile.
 logger = logging.getLogger(__name__)
+
+# Every group is confined to one identity and one fold, whatever the scope. The identity is not
+# optional and is deliberately not left to the scopes to remember: 'video' is only a per-identity
+# number ("0", "1", ...), so every identity has a video "0" and a grouping that left the identity
+# out would aggregate unrelated people into one embedding.
+ALWAYS_GROUPED = ["identity", "fold"]
+
+# What *else* separates groups, per scope: 'video' keeps the videos of an identity apart, so it
+# aggregates the frames of one video; 'identity' adds nothing, so everything the fold holds of that
+# identity is aggregated together.
+SCOPES = {
+    "video": ["video"],
+    "identity": [],
+}
+
+# The identity scope leaves no single video to name, but the column stays: 'score' keys its queries
+# by identity-video, and one uniform output shape is worth more than a column that comes and goes.
+ALL_VIDEOS = "*"
 
 # Every 'frame_aggregator' named by an experiment leg in the config needs an entry here.
 # noinspection SpellCheckingInspection
@@ -37,15 +55,35 @@ AGGREGATORS = {
     "normweighted": normweighted.NormWeightedAggregator(),
 }
 
+def resolve(frame_aggregator: str) -> tuple[list[str], Aggregator]:
+    """
+    Read a '{scope}_{method}' key as the columns defining a group and the aggregator to collapse it.
+
+    :param frame_aggregator: The method key, e.g. 'video_pooling_mean' or 'identity_none'
+    :return: The complete grouping columns, always including the identity and the fold, and the
+        aggregator to collapse each group with
+    :raises ValueError: If either half names something the registries have no entry for
+    """
+    scope, _, method = frame_aggregator.partition("_")
+
+    separators = SCOPES.get(scope)
+    if separators is None:
+        raise ValueError(
+            f"Unknown aggregation scope {scope!r} in {frame_aggregator!r}, expected one of {sorted(SCOPES)}"
+        )
+
+    aggregator = AGGREGATORS.get(method)
+    if aggregator is None:
+        raise ValueError(f"Unknown aggregation method {method!r} in {frame_aggregator!r}")
+    return ALWAYS_GROUPED + separators, aggregator
+
 def main(input_path: Path, split_path: Path, output_path: Path, method: str):
     # Crate the output directory if it does not exist
     logger.debug("Generating output directory")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Get the aggregator based on the provided method key.
-    aggregator = AGGREGATORS.get(method)
-    if aggregator is None:
-        raise ValueError(f"Unknown frame aggregation method: {method}")
+    # Get the scope and the aggregator based on the provided method key.
+    group_by, aggregator = resolve(method)
 
     # Read the input dataset structure and attach the fold of every video. The split holds one row
     # per identity-video, so the merge never duplicates an embedding. The fold only rides along:
@@ -60,15 +98,16 @@ def main(input_path: Path, split_path: Path, output_path: Path, method: str):
     if unassigned:
         raise ValueError(f"{unassigned} rows have no fold assigned by the split")
 
-    # Collapse the frames of every identity-video into the one or more embeddings the aggregator
-    # returns. This drops the frame reference, as several frames are potentially combined into one.
-    # The fold is constant within a video, so grouping on it carries it into the output for free.
+    # Collapse the frames of every group into the one or more embeddings the aggregator returns.
+    # This drops the frame reference, as several frames are potentially combined into one, and under
+    # the identity scope the video reference as well. The identity and the fold are part of every
+    # group key, so they survive the aggregation and land back in the output for free.
     # An aggregator returns a list, hence the explode; a clustering aggregator whose clusters all
     # fall below 'min_cluster_size' returns none at all, which explodes to a null row and is dropped.
     logger.debug("Aggregating frames", extra={ "method": method, "len": len(structure_df) })
-    videos = structure_df.groupby(["identity", "video"]).ngroups
+    groups = structure_df.groupby(group_by).ngroups
     structure_df = (
-        structure_df.groupby(["identity", "video", "fold"])["embedding"]
+        structure_df.groupby(group_by)["embedding"]
         .apply(lambda embeddings: aggregator.aggregate(embeddings.to_list()))
         .explode()
         .rename("embedding")
@@ -76,17 +115,19 @@ def main(input_path: Path, split_path: Path, output_path: Path, method: str):
         .dropna(subset=["embedding"])
     )
 
-    # A video that lost every embedding can never be matched, so it silently caps the achievable
+    # A group that lost every embedding can never be matched, so it silently caps the achievable
     # accuracy. Report it instead of letting it disappear.
-    lost = videos - structure_df.groupby(["identity", "video"]).ngroups
+    lost = groups - structure_df.groupby(group_by).ngroups
     if lost:
-        logger.warning("Videos without an aggregated embedding", extra={
+        logger.warning("Groups without an aggregated embedding", extra={
             "method": method,
             "lost": lost,
-            "videos": videos,
+            "groups": groups,
         })
 
-    # Write the full dataset back. It now contains the aggregated embeddings per identity-video.
+    # Write the full dataset back. It now contains the aggregated embeddings per group.
+    if "video" not in structure_df:
+        structure_df["video"] = ALL_VIDEOS
     logger.info("Aggregated frames", extra={ "method": method, "len": len(structure_df) })
     structure_df[["identity", "video", "fold", "embedding"]].to_parquet(output_path)
 

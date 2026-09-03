@@ -79,9 +79,12 @@ rule embed_frame:
     script: "scripts/embed_frame.py"
 
 
-# Aggregates all frame embeddings of an identity-video into one or more (aggregated) embeddings. This removes the frame
-# reference as multiple frames are potentially combined into one, and is the step the experiment is actually about: it
-# is where many anonymized observations of one video are allowed to reinforce each other.
+# Aggregates the frame embeddings of a group into one or more (aggregated) embeddings. This removes the frame reference
+# as multiple frames are potentially combined into one, and is the step the experiment is actually about: it is where
+# many anonymized observations are allowed to reinforce each other.
+# '{frame_aggregation}' names the scope as well as the method, as '{video|identity}_{method}': 'video_*' groups the
+# frames of one video, 'identity_*' groups everything the fold holds of one identity. A group never spans folds either
+# way, so the scope only decides how much an attacker is assumed to be able to link together before matching.
 # The fold of every video is merged in here (this is the only rule that reads the split) but nothing is held out yet --
 # every video is aggregated the same way, and 'score_experiment' is what decides which folds form a gallery and which
 # are queried against it. That keeps one aggregation reusable as either side of any pairing.

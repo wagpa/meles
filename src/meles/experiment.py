@@ -5,7 +5,9 @@ from itertools import product
 LEG_DEFAULTS = {
     "frame_anonymizer": 'none',
     "frame_recognizer": 'arcface',
-    "frame_aggregator": 'none',
+    # The aggregator carries its scope: '{video|identity}_{method}'. The default keeps every video
+    # of an identity separate and aggregates nothing within them.
+    "frame_aggregator": 'video_none',
 }
 
 @dataclass(frozen=True)

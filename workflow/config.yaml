@@ -14,7 +14,9 @@ log_dir: logs
 split_k: 3
 split_shuffle: True
 
-# The experiment configuration.
+# The experiment configuration. 'frame_aggregator' names a scope as well as a method:
+# 'video_*' aggregates the frames of one video, 'identity_*' aggregates everything a fold holds of
+# one identity. Fields the gallery leg does not name are inherited from the samples leg.
 experiment:
   name: arcface_against_clear_gallery
   samples:
@@ -24,12 +26,12 @@ experiment:
     - blackbar
     - pixelation
     frame_recognizer: arcface
-    frame_aggregator: none
+    frame_aggregator: video_none
   gallery:
     frame_anonymizer:
       - none
     frame_aggregator:
-      - none
-      - pooling_mean
-      - consensus_beta1
-      - normweighted
+      - video_none
+      - identity_pooling_mean
+      - identity_consensus_beta1
+      - identity_normweighted
