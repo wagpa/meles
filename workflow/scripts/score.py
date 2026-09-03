@@ -4,7 +4,7 @@ import pandas as pd
 from typing import TYPE_CHECKING, Dict
 
 from meles import scoring
-from meles.runtime import logs
+from meles.runtime import logs, runtime
 
 # Fix snakemake typechecking errors
 if TYPE_CHECKING:
@@ -85,6 +85,7 @@ def main(gallery_path: Path, samples_path: Path, output_path: Path, method: Dict
 if __name__ == "__main__":
     # Snakemake only names the log file; a script rule has to redirect into it itself.
     logs.configure(snakemake.log[0])
+    runtime.configure_threads(snakemake.threads)
 
     # noinspection unbound-local-variable
     main(

@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 from typing import TYPE_CHECKING
 
-from meles.runtime import logs
+from meles.runtime import logs, runtime
 from meles.aggregation import clustering, consensus, pooling, normweighted
 from meles.aggregation.aggregator import Aggregator, NoAggregator
 
@@ -134,6 +134,7 @@ def main(input_path: Path, split_path: Path, output_path: Path, method: str):
 if __name__ == "__main__":
     # Snakemake only names the log file; a script rule has to redirect into it itself.
     logs.configure(snakemake.log[0])
+    runtime.configure_threads(snakemake.threads)
 
     # noinspection unbound-local-variable
     main(
