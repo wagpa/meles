@@ -6,7 +6,8 @@ import os
 from tqdm import tqdm
 from typing import TYPE_CHECKING
 
-from meles import logs, runtime
+from meles import runtime
+from meles.runtime import logs
 from meles.anonymization.anonymizer import NoAnonymizer, GaussianBlurAnonymizer, BlackBarAnonymizer, \
     PixelationAnonymizer
 from meles.detection import default_detector

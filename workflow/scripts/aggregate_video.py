@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 from typing import TYPE_CHECKING
 
-from meles import logs
+from meles.runtime import logs
 from meles.aggregation import clustering, consensus, pooling, normweighted
 from meles.aggregation.aggregator import NoAggregator
 

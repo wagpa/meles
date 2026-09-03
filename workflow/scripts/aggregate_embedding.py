@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 from typing import TYPE_CHECKING
 
-from meles import logs
+from meles.runtime import logs
 from meles.aggregation import clustering, consensus, pooling, normweighted
 from meles.aggregation.aggregator import Aggregator, NoAggregator
 
@@ -53,7 +53,7 @@ def identity_level(aggregator: Aggregator) -> Aggregator:
         )
     return aggregator
 
-def main(input_path: Path, split_path: Path, output_path: Path, method: str):
+def main(input_path: Path, split_path: Path, output_path: Path, method: str, identity: bool = True):
     # Crate the output directory if it does not exist
     logger.debug("Generating output directory")
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -61,8 +61,8 @@ def main(input_path: Path, split_path: Path, output_path: Path, method: str):
     # Get the aggregator based on the provided method key.
     aggregator = AGGREGATORS.get(method)
     if aggregator is None:
-        raise ValueError(f"Unknown identity aggregation method: {method}")
-    aggregator = identity_level(aggregator)
+        raise ValueError(f"Unknown embedding aggregation method: {method}")
+    aggregator = identity_level(aggregator) if identity else aggregator
 
     # Read the input dataset structure and join it with the split. The split holds one row per
     # identity-video, so the merge never duplicates an embedding.
@@ -81,11 +81,12 @@ def main(input_path: Path, split_path: Path, output_path: Path, method: str):
     # column of the output therefore names the held-out fold, not the fold the videos came from.
     folds = sorted(split_df["fold"].unique())
     galleries = []
+    group_by = ["identity"] if identity else ["identity", "video"]
     for fold in folds:
         logger.debug("Aggregating identities for held-out fold", extra={ "fold": int(fold) })
         gallery_df = (
             structure_df[structure_df["fold"] != fold]
-            .groupby(["identity"])["embedding"]
+            .groupby(group_by)["embedding"]
             .apply(lambda embeddings: aggregator.aggregate(embeddings.to_list()))
             .explode()
             .rename("embedding")
@@ -107,7 +108,7 @@ def main(input_path: Path, split_path: Path, output_path: Path, method: str):
     structure_df = pd.concat(galleries, ignore_index=True)
 
     # Write the full dataset back. It now contains aggregated embeddings for each identity and fold.
-    structure_df[["identity", "fold", "embedding"]].to_parquet(output_path)
+    structure_df[["identity", "video", "fold", "embedding"]].to_parquet(output_path)
 
 if __name__ == "__main__":
     # Snakemake only names the log file; a script rule has to redirect into it itself.
@@ -119,4 +120,5 @@ if __name__ == "__main__":
         split_path=Path(snakemake.input.k_split),
         output_path=Path(snakemake.output.dataset),
         method=snakemake.wildcards.get("identity_aggregation"),
+        scope="video" # or "identity"
     )

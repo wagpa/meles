@@ -36,7 +36,6 @@ rule anonymize_frame:
     script: "scripts/anonymize_frame.py"
 
 
-# TODO use round robin so that fold 1 does not always get more videos (dont reset after identity)
 # Splits the dataset for k-fold cross validation. It takes the dataset as input and generates a structure
 # file in which each identity-video is assigned a 'fold' (1 to k). This step is split such that altering the
 # splits does not trigger a re-run of the anonymize and (partial) aggregation rules. Only those that actually
@@ -56,19 +55,6 @@ rule split:
     script: "scripts/k_split.py"
 
 
-# Embeds each video of the dataset adding the embedding to the dataset structure. Each embedding method has
-# its own embedding dimensionality.
-# Input Format: **, path (str)
-# Output Format: **, embedding (float[])
-rule embed_video:
-    input:
-        dataset=RESULT_PATH / "anonymize_frame/{frame_anonymization}/structure.parquet",
-    output:
-        dataset=RESULT_PATH / "embed_video/{frame_anonymization}/{video_embedding}/structure.parquet",
-    log: LOG_PATH / "embed_video/{frame_anonymization}/{video_embedding}.log"
-    script: "scripts/embed_video.py"
-
-
 # Embeds each frame of the dataset adding the embedding to the dataset structure. Each embedding method has
 # its own embedding dimensionality. The frame paths are also updated according to the new relative output path.
 # Input Format: **, path (str)
@@ -81,20 +67,6 @@ rule embed_frame:
     threads: 4
     log: LOG_PATH / "embed_frame/{frame_anonymization}/{frame_embedding}.log"
     script: "scripts/embed_frame.py"
-
-
-# Aggregates all frame embeddings of an identity-video into one or more (aggregated) embeddings. This removes the frame
-# reference as multiple frames are potentially combined into one. The frame embedder is able to use the original frame
-# information to substitute additional information (e.g., the frame image quality).
-# Input Format: **, path (str), embedding (float[])
-# Output Format: **, embedding (float[])
-rule aggregate_video:
-    input:
-        dataset=RESULT_PATH / "embed_frame/{frame_anonymization}/{frame_embedding}/structure.parquet",
-    output:
-        dataset=RESULT_PATH / "aggregate_video/{frame_anonymization}/{frame_embedding}/{video_aggregation}/structure.parquet",
-    log: LOG_PATH / "aggregate_video/{frame_anonymization}/{frame_embedding}/{video_aggregation}.log"
-    script: "scripts/aggregate_video.py"
 
 
 # Aggregates all video embeddings of an identity into one or more (aggregated) embeddings. This removes the video reference
@@ -113,18 +85,6 @@ rule aggregate_frame_identity:
         dataset=RESULT_PATH / "aggregate_frame_identity/{frame_anonymization}/{frame_embedding}/{video_aggregation}/{identity_aggregation}/structure.parquet",
     log: LOG_PATH / "aggregate_frame_identity/{frame_anonymization}/{frame_embedding}/{video_aggregation}/{identity_aggregation}.log"
     script: "scripts/aggregate_identity.py"
-
-
-# Same as 'aggregate_frame_identity', but for the (video-embedding) branch that skips per-frame aggregation
-# entirely and embeds whole videos directly. Shares its script with 'aggregate_frame_identity'; only the
-# wildcard shape differs (no {video_aggregation} segment, since there was never a per-video aggregation step).
-use rule aggregate_frame_identity as aggregate_video_identity with:
-    input:
-        dataset=RESULT_PATH / "embed_video/{frame_anonymization}/{video_embedding}/structure.parquet",
-        k_split=RESULT_PATH / "split/structure.parquet",
-    output:
-        dataset=RESULT_PATH / "aggregate_video_identity/{frame_anonymization}/{video_embedding}/{identity_aggregation}/structure.parquet",
-    log: LOG_PATH / "aggregate_video_identity/{frame_anonymization}/{video_embedding}/{identity_aggregation}.log"
 
 
 # Scores the recognition accuracy for each fold. It uses the identity aggregation as the gallery (train) and the video
@@ -146,18 +106,6 @@ rule score_frame:
     script: "scripts/score.py"
 
 
-# Same as 'score_frame', but for the video-embedding branch. Shares its script with 'score_frame'; only the
-# wildcard shape differs (no {video_aggregation} segment).
-use rule score_frame as score_video with:
-    input:
-        train_dataset=RESULT_PATH / "aggregate_video_identity/{frame_anonymization}/{video_embedding}/{identity_aggregation}/structure.parquet",
-        test_dataset=RESULT_PATH / "embed_video/{frame_anonymization}/{video_embedding}/structure.parquet",
-        k_split=RESULT_PATH / "split/structure.parquet",
-    output:
-        dataset=RESULT_PATH / "score_video/{frame_anonymization}/{video_embedding}/{identity_aggregation}/structure.parquet",
-    log: LOG_PATH / "score_video/{frame_anonymization}/{video_embedding}/{identity_aggregation}.log"
-
-
 # Gathers every score_frame and score_video result produced across the full parameter grid and concatenates
 # them into one comparison table. This is a genuine union (not a branch selection): a run that varies
 # {frame_embedding} x {video_aggregation} and a run that varies {video_embedding} are different points in
@@ -173,76 +121,12 @@ rule collect_recognition:
             video_aggregation=VIDEO_AGGREGATORS,
             identity_aggregation=IDENTITY_AGGREGATORS,
         ),
-        video=expand(
-            RESULT_PATH / "score_video/{frame_anonymization}/{video_embedding}/{identity_aggregation}/structure.parquet",
-            frame_anonymization=ANONYMIZATIONS,
-            video_embedding=VIDEO_EMBEDDINGS,
-            identity_aggregation=IDENTITY_AGGREGATORS,
-        ),
     output:
         dataset=RESULT_PATH / "collect/recognition.parquet",
     log: LOG_PATH / "collect/recognition.log"
     script: "scripts/collect.py"
 
-# Scores how well the embeddings cluster into identities. This runs on 'aggregate_video', *before* the identity
-# aggregation, because that is the last stage where an identity still spans several rows: a pooling identity
-# aggregator leaves exactly one embedding per identity, so k == n and every point becomes its own cluster (which
-# is also why 'silhouette_score' raised there). Note there is no {identity_aggregation} axis here at all -- the
-# clustering asks whether the per-video embeddings recover the identity partition, a question the identity
-# aggregation would answer by construction. For the same reason the input carries no 'fold': clustering is
-# unsupervised and needs no gallery/query split, so this is one global fit over every video.
-# Input (dataset): identity (str), video (str), embedding (float[])
-# Output: silhouette_avg (float), adjusted_rand_score (float), n_samples (int), ..., frame_anonymization (str),  frame_embedding/video_embedding (str),  video_aggregation (str)
-rule score_frame_cluster:
-    input:
-        dataset=RESULT_PATH / "aggregate_video/{frame_anonymization}/{frame_embedding}/{video_aggregation}/structure.parquet",
-    output:
-        dataset=RESULT_PATH / "score_frame_cluster/{frame_anonymization}/{frame_embedding}/{video_aggregation}/structure.parquet",
-    # KMeans is the expensive part: with {video_aggregation} 'none' the input is one row per frame (~130k x 512
-    # on the full dataset) and k is the identity count, so this is not the cheap per-fold scoring 'score_frame' does.
-    threads: 4
-    log: LOG_PATH / "score_frame_cluster/{frame_anonymization}/{frame_embedding}/{video_aggregation}.log"
-    script: "scripts/score_cluster.py"
-
-
-# Same as 'score_frame_cluster', but for the video-embedding branch. Shares its script with 'score_frame_cluster'; only
-# the wildcard shape differs (no {video_aggregation} segment). 'embed_video' is this branch's equivalent of
-# 'aggregate_video': one template per video, which is exactly the shape the clustering needs.
-use rule score_frame_cluster as score_video_cluster with:
-    input:
-        dataset=RESULT_PATH / "embed_video/{frame_anonymization}/{video_embedding}/structure.parquet",
-    output:
-        dataset=RESULT_PATH / "score_video_cluster/{frame_anonymization}/{video_embedding}/structure.parquet",
-    log: LOG_PATH / "score_video_cluster/{frame_anonymization}/{video_embedding}.log"
-
-
-# Gathers every score_frame_cluster and score_video_cluster result produced across the full parameter grid and concatenates
-# them into one comparison table. This is a genuine union (not a branch selection): a run that varies
-# {frame_embedding} x {video_aggregation} and a run that varies {video_embedding} are different points in
-# the same comparison, not alternate paths to the same answer, so both sets of rows belong in the output.
-# Input (flatten(*)): ...
-# Output: pipeline (str), ...
-rule collect_clustering:
-    input:
-        frame=expand(
-            RESULT_PATH / "score_frame_cluster/{frame_anonymization}/{frame_embedding}/{video_aggregation}/structure.parquet",
-            frame_anonymization=ANONYMIZATIONS,
-            frame_embedding=FRAME_EMBEDDINGS,
-            video_aggregation=VIDEO_AGGREGATORS,
-        ),
-        video=expand(
-            RESULT_PATH / "score_video_cluster/{frame_anonymization}/{video_embedding}/structure.parquet",
-            frame_anonymization=ANONYMIZATIONS,
-            video_embedding=VIDEO_EMBEDDINGS,
-        ),
-    output:
-        dataset=RESULT_PATH / "collect/clustering.parquet",
-    log: LOG_PATH / "collect/clustering.log"
-    script: "scripts/collect.py"
-
-
 rule all:
     default_target: True
     input:
         recognition=RESULT_PATH / "collect/recognition.parquet",
-        clustering=RESULT_PATH / "collect/clustering.parquet",

@@ -3,7 +3,8 @@ from pathlib import Path
 import pandas as pd
 from typing import TYPE_CHECKING, Dict
 
-from meles import logs, scoring
+from meles import scoring
+from meles.runtime import logs
 
 # Fix snakemake typechecking errors
 if TYPE_CHECKING:

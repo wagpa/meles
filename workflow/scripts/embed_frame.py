@@ -4,7 +4,8 @@ from pathlib import Path
 import pandas as pd
 from typing import TYPE_CHECKING
 
-from meles import logs, runtime
+from meles import runtime
+from meles.runtime import logs
 from meles.recognizer import models
 from meles.recognizer.frame import FrameEmbedder
 
