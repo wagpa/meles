@@ -14,54 +14,22 @@ log_dir: logs
 split_k: 3
 split_shuffle: True
 
-# The anonymization methods (with implicit parametrization) to be tested.
-anonymization_methods:
-- none
-- gaussianblur
-- blackbar
-- pixelation
-
-# The frame-level embedding models (with implicit parametrization) to be tested. Every entry
-# needs a matching key in the EMBEDDERS dict in workflow/scripts/embed_frame.py.
-frame_embedding_methods:
-- sface
-- ghostfacenet
-- arcface
-
-# The video-level embedding models (with implicit parametrization) to be tested.
-video_embedding_methods: []
-#- dummy1
-#- dummy2
-#- dummy3
-
-# The video-level aggregation methods (with implicit parametrization) to be tested.
-video_aggregation_methods:
-- none
-- pooling_mean
-#- pooling_min
-#- pooling_max
-#- pooling_median
-#- clustering_mean_d1_min3
-#- clustering_mean_d08_min3
-#- clustering_median_d1_min3
-#- clustering_median_d08_min3
-- consensus_beta1
-#- consensus_beta5
-#- consensus_beta20
-- normweighted
-
-# The video-level aggregation methods (with implicit parametrization) to be tested.
-identity_aggregation_methods:
-- none
-- pooling_mean
-#- pooling_min
-#- pooling_max
-#- pooling_median
-#- clustering_median_d1_min3
-#- clustering_mean_d1_min3
-#- clustering_median_d08_min3
-#- clustering_mean_d08_min3
-- consensus_beta1
-#- consensus_beta5
-#- consensus_beta20
-- normweighted
+# The experiment configuration.
+experiment:
+  name: arcface_against_clear_gallery
+  samples:
+    frame_anonymizer:
+    - none
+    - gaussianblur
+    - blackbar
+    - pixelation
+    frame_recognizer: arcface
+    frame_aggregator: none
+  gallery:
+    frame_anonymizer:
+      - none
+    frame_aggregator:
+      - none
+      - pooling_mean
+      - consensus_beta1
+      - normweighted

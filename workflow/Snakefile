@@ -1,5 +1,5 @@
 from pathlib import Path
-
+from meles.experiment import parse_experiment
 
 # The configuration file
 configfile: "workflow/config.yaml"
@@ -9,14 +9,15 @@ DATASET_PATH = Path(config["dataset"])
 RESULT_PATH = Path(config["result_dir"])
 LOG_PATH = Path(config["log_dir"])
 
-ANONYMIZATIONS = config["anonymization_methods"]
-FRAME_EMBEDDINGS = config["frame_embedding_methods"]
-VIDEO_EMBEDDINGS = config["video_embedding_methods"]
-VIDEO_AGGREGATORS = config["video_aggregation_methods"]
-IDENTITY_AGGREGATORS = config["identity_aggregation_methods"]
-
 SPLIT_K = int(config["split_k"])
 SPLIT_SHUFFLE = bool(config["split_shuffle"])
+
+EXPERIMENT = parse_experiment(config["experiment"])
+
+ANONYMIZATIONS = config["anonymization_methods"]
+FRAME_EMBEDDINGS = config["frame_embedding_methods"]
+VIDEO_AGGREGATORS = config["video_aggregation_methods"]
+IDENTITY_AGGREGATORS = config["identity_aggregation_methods"]
 
 
 # Anonymizes the dataset for each anonymization method. It takes the dataset as input and generates a
@@ -69,64 +70,46 @@ rule embed_frame:
     script: "scripts/embed_frame.py"
 
 
-# Aggregates all video embeddings of an identity into one or more (aggregated) embeddings. This removes the video reference
-# as multiple videos are potentially combined into one. This takes the output from 'aggregate_video' (frame-wise embedding).
-# One gallery is built per held-out fold: the rows tagged fold=f aggregate every video of an identity *except* those in
-# fold f, which are the queries 'score' uses for that fold. 'fold' therefore names the held-out fold, not the fold the
-# aggregated videos belong to.
-# Input Format (dataset): **, identity (str), video (str), embedding (float[])
-# Input Format (k_split): identity (str), video (str), fold (int)
-# Output Format: identity (str), fold (int), embedding (float[])
-rule aggregate_frame_identity:
+# TODO add docs
+rule aggregate_embedding:
     input:
-        dataset=RESULT_PATH / "aggregate_video/{frame_anonymization}/{frame_embedding}/{video_aggregation}/structure.parquet",
+        dataset=RESULT_PATH / "embed_frame/{frame_anonymization}/{frame_embedding}/structure.parquet",
         k_split=RESULT_PATH / "split/structure.parquet",
     output:
-        dataset=RESULT_PATH / "aggregate_frame_identity/{frame_anonymization}/{frame_embedding}/{video_aggregation}/{identity_aggregation}/structure.parquet",
-    log: LOG_PATH / "aggregate_frame_identity/{frame_anonymization}/{frame_embedding}/{video_aggregation}/{identity_aggregation}.log"
-    script: "scripts/aggregate_identity.py"
+        dataset=RESULT_PATH / "aggregate_embedding/{frame_anonymization}/{frame_embedding}/{frame_aggregation}/structure.parquet",
+    log: LOG_PATH / "aggregate_embedding/{frame_anonymization}/{frame_embedding}/{frame_aggregation}.log"
+    script: "scripts/aggregate_embedding.py"
 
 
-# Scores the recognition accuracy for each fold. It uses the identity aggregation as the gallery (train) and the video
-# aggregation as the query (test). Fold f queries the videos of fold f against the gallery built from the other k-1 folds,
-# so both sides are selected on the same 'fold' value.
-# Also injects the wildcard combination into the score to be trackable.
-# Input (train_dataset): identity (str), embedding (float[]), fold (int)
-# Input (test_dataset): identity (str), video (str), embedding (float[])
-# Input (k_split): identity (str), video (str), fold (int)
-# Output: fold (int), top-1 (float), ..., frame_anonymization (str),  frame_embedding/video_embedding (str),  video_aggregation/video_embedding (str),  identity_aggregation (str)
-rule score_frame:
+# TODO add docs
+rule score_experiment:
     input:
-        train_dataset=RESULT_PATH / "aggregate_frame_identity/{frame_anonymization}/{frame_embedding}/{video_aggregation}/{identity_aggregation}/structure.parquet",
-        test_dataset=RESULT_PATH / "aggregate_video/{frame_anonymization}/{frame_embedding}/{video_aggregation}/structure.parquet",
-        k_split=RESULT_PATH / "split/structure.parquet",
+        gallery_dataset=RESULT_PATH / "aggregate_embedding/{gallery_frame_anonymization}/{gallery_frame_embedding}/{gallery_frame_aggregation}/structure.parquet",
+        samples_dataset=RESULT_PATH / "aggregate_embedding/{samples_frame_anonymization}/{samples_frame_embedding}/{samples_frame_aggregation}/structure.parquet",
     output:
-        dataset=RESULT_PATH / "score_frame/{frame_anonymization}/{frame_embedding}/{video_aggregation}/{identity_aggregation}/structure.parquet",
-    log: LOG_PATH / "score_frame/{frame_anonymization}/{frame_embedding}/{video_aggregation}/{identity_aggregation}.log"
+        dataset=RESULT_PATH / "score_frame/{gallery_frame_anonymization}/{gallery_frame_embedding}/{gallery_frame_aggregation}/-/{samples_frame_anonymization}/{samples_frame_embedding}/{samples_frame_aggregation}/structure.parquet",
+    log: LOG_PATH / "score_frame/{gallery_frame_anonymization}/{gallery_frame_embedding}/{gallery_frame_aggregation}/-/{samples_frame_anonymization}/{samples_frame_embedding}/{samples_frame_aggregation}.log"
     script: "scripts/score.py"
 
 
-# Gathers every score_frame and score_video result produced across the full parameter grid and concatenates
-# them into one comparison table. This is a genuine union (not a branch selection): a run that varies
-# {frame_embedding} x {video_aggregation} and a run that varies {video_embedding} are different points in
-# the same comparison, not alternate paths to the same answer, so both sets of rows belong in the output.
-# Input (flatten(*)): ...
-# Output: pipeline (str), ...
+# TODO add docs
 rule collect_recognition:
     input:
         frame=expand(
-            RESULT_PATH / "score_frame/{frame_anonymization}/{frame_embedding}/{video_aggregation}/{identity_aggregation}/structure.parquet",
-            frame_anonymization=ANONYMIZATIONS,
-            frame_embedding=FRAME_EMBEDDINGS,
-            video_aggregation=VIDEO_AGGREGATORS,
-            identity_aggregation=IDENTITY_AGGREGATORS,
+            RESULT_PATH / "score_frame/{gallery_frame_anonymization}/{gallery_frame_embedding}/{gallery_frame_aggregation}/-/{samples_frame_anonymization}/{samples_frame_embedding}/{samples_frame_aggregation}/structure.parquet",
+            gallery_frame_anonymization=EXPERIMENT.samples.frame_anonymizer,
+            gallery_frame_embedding=EXPERIMENT.samples.frame_recognizer,
+            gallery_frame_aggregation=EXPERIMENT.samples.frame_aggregation,
+            samples_frame_anonymization=EXPERIMENT.gallery.frame_aggregator,
+            samples_frame_embedding=EXPERIMENT.gallery.frame_recognizer,
+            samples_frame_aggregation=EXPERIMENT.gallery.frame_aggregator,
         ),
     output:
-        dataset=RESULT_PATH / "collect/recognition.parquet",
-    log: LOG_PATH / "collect/recognition.log"
+        dataset=RESULT_PATH / EXPERIMENT.name / "recognition.parquet",
+    log: LOG_PATH / EXPERIMENT.name / "recognition.log"
     script: "scripts/collect.py"
 
 rule all:
     default_target: True
     input:
-        recognition=RESULT_PATH / "collect/recognition.parquet",
+        recognition=RESULT_PATH / EXPERIMENT.name / "recognition.parquet",

@@ -1,0 +1,54 @@
+from dataclasses import dataclass
+from typing import Any, List, Dict
+from itertools import product
+
+LEG_DEFAULTS = {
+    "frame_anonymizer": 'none',
+    "frame_recognizer": 'arcface',
+    "frame_aggregator": 'none',
+}
+
+@dataclass(frozen=True)
+class ExperimentLeg:
+    """A leg of an experiment."""
+
+    frame_anonymizer: List[str]
+    frame_recognizer: List[str]
+    frame_aggregator: List[str]
+
+
+@dataclass(frozen=True)
+class Experiment:
+    """A named comparison of two legs, scored with one prediction aggregator."""
+
+    name: str
+    samples: ExperimentLeg
+    gallery: ExperimentLeg
+
+
+def parse_experiment(spec: dict[str, Any]) -> Experiment:
+    """Parse an experiment from a workflow config specification. The spec is flattened into the set of experiments."""
+    name = spec["name"] or "unknown"
+
+    # Get the experiment legs, the gallery defaults to the samples. Each should be a dict of string(s).
+    samples_spec = { **LEG_DEFAULTS, **spec["samples"] }
+    gallery_spec = { **samples_spec, **spec["gallery"] }
+
+    def dict_lists(d: Dict[str, Any]) -> Dict[str, List[str]]:
+        return { k: [v] if isinstance(v, str) else v for k, v in d.items() }
+    samples_specs = dict_lists(samples_spec)
+    gallery_specs = dict_lists(gallery_spec)
+
+    return Experiment(
+        name,
+        ExperimentLeg(*samples_specs),
+        ExperimentLeg(*gallery_specs),
+    )
+
+
+# Flatten the experiment legs into a list of dicts. Each should only have one string value per key.
+def dict_combinations(d):
+    keys = d.keys()
+    values = [v if isinstance(v, (list, tuple)) else [v] for v in d.values()]
+    for combo in product(*values):
+        yield dict(zip(keys, combo))
