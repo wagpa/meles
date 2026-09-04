@@ -139,11 +139,11 @@ rule collect_recognition:
             samples_frame_aggregation=EXPERIMENT.samples.frame_aggregator,
         ),
     output:
-        dataset=RESULT_PATH / EXPERIMENT.name / "recognition.parquet",
-    log: LOG_PATH / EXPERIMENT.name / "recognition.log"
+        dataset=RESULT_PATH / f"{EXPERIMENT.name}.parquet",
+    log: LOG_PATH / f"{EXPERIMENT.name}.log"
     script: "scripts/collect.py"
 
 rule all:
     default_target: True
     input:
-        recognition=RESULT_PATH / EXPERIMENT.name / "recognition.parquet",
+        recognition=RESULT_PATH / f"{EXPERIMENT.name}.parquet",
