@@ -18,7 +18,24 @@ split_shuffle: True
 # 'video_*' aggregates the frames of one video, 'identity_*' aggregates everything a fold holds of
 # one identity. Fields the gallery leg does not name are inherited from the samples leg.
 experiment:
-  name: arcface_against_clear_gallery
+  #name: arcface_against_clear_gallery
+  #samples:
+  #  frame_anonymizer:
+  #  - none
+  #  - gaussianblur
+  #  - blackbar
+  #  - pixelation
+  #  frame_recognizer: arcface
+  #  frame_aggregator: video_none
+  #gallery:
+  #  frame_anonymizer:
+  #    - none
+  #  frame_aggregator:
+  #    - video_none
+  #    - identity_pooling_mean
+  #    - identity_consensus_beta1
+  #    - identity_normweighted
+  name: arcface_against_anonymized_gallery
   samples:
     frame_anonymizer:
     - none
@@ -28,8 +45,6 @@ experiment:
     frame_recognizer: arcface
     frame_aggregator: video_none
   gallery:
-    frame_anonymizer:
-      - none
     frame_aggregator:
       - video_none
       - identity_pooling_mean
