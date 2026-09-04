@@ -35,7 +35,24 @@ experiment:
   #    - identity_pooling_mean
   #    - identity_consensus_beta1
   #    - identity_normweighted
-  name: arcface_against_anonymized_gallery
+
+  #name: arcface_against_anonymized_gallery
+  #samples:
+  #  frame_anonymizer:
+  #  - none
+  #  - gaussianblur
+  #  - blackbar
+  #  - pixelation
+  #  frame_recognizer: arcface
+  #  frame_aggregator: video_none
+  #gallery:
+  #  frame_aggregator:
+  #    - video_none
+  #    - identity_pooling_mean
+  #    - identity_consensus_beta1
+  #    - identity_normweighted
+
+  name: arcface_all_combinations
   samples:
     frame_anonymizer:
     - none
@@ -43,7 +60,11 @@ experiment:
     - blackbar
     - pixelation
     frame_recognizer: arcface
-    frame_aggregator: video_none
+    frame_aggregator:
+      - video_none
+      - video_pooling_mean
+      - video_consensus_beta1
+      - video_normweighted
   gallery:
     frame_aggregator:
       - video_none
