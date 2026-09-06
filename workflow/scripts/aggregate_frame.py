@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from meles.common import Images
 from meles.runtime import logs, runtime
+from meles.frame_aggregation import resample
 from meles.frame_aggregation.aggregator import FrameAggregator, NoFrameAggregator
 
 # Fix snakemake typechecking errors
@@ -44,9 +45,12 @@ UNSUPPORTED_SCOPES = {
 }
 
 # Every 'frame_aggregator' named by an experiment leg in the config needs an entry here.
+# A 'frame_*' method is frame-wise: it returns as many frames as it was given and combines nothing,
+# which is how the de-anonymizations fit a rule otherwise about aggregation.
 # noinspection SpellCheckingInspection
 AGGREGATORS = {
     "none": NoFrameAggregator(),
+    "frame_bicubic": resample.BicubicFrameAggregator(),
 }
 
 def resolve(frame_aggregator: str) -> tuple[list[str], FrameAggregator]:
@@ -148,13 +152,20 @@ def main(input_path: Path, split_path: Path, output_path: Path, method: str):
             continue
 
         # Otherwise the aggregated frames are new images and have to be written out. A group is one
-        # identity-video, so the whole group shares both, and the file name only has to separate the
-        # frames the aggregator returned -- there is no original frame left to name them after.
+        # identity-video, so the whole group shares both.
         identity, video = group["identity"].iloc[0], group["video"].iloc[0]
         suffix = group["frame_suffix"].iloc[0]
+        # An aggregator that returned as many frames as it was given combined nothing -- it worked
+        # frame-wise, which is what the 'frame_*' de-anonymizations do -- so every frame still
+        # answers to the name it arrived under, and this directory stays comparable to the
+        # anonymized one it was built from. A group that really collapsed has no original frame
+        # left to name its result after, so those are numbered instead.
+        if len(aggregated) == len(group):
+            names = list(group["frame"])
+        else:
+            names = [f"{method}.{index}{suffix}" for index in range(len(aggregated))]
         made = []
-        for index, image in enumerate(aggregated):
-            frame = f"{method}.{index}{suffix}"
+        for frame, image in zip(names, aggregated):
             image_output_path = output_path.parent / identity / video / frame
             os.makedirs(image_output_path.parent, exist_ok=True)
             if not cv2.imwrite(str(image_output_path), image):

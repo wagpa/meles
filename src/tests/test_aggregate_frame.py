@@ -22,6 +22,7 @@ import pytest
 
 from meles.common import Images
 from meles.frame_aggregation.aggregator import FrameAggregator
+from meles.frame_aggregation.resample import BicubicFrameAggregator
 
 SCRIPT = Path("workflow/scripts/aggregate_frame.py")
 
@@ -148,6 +149,29 @@ def test_new_pixels_are_written_out_per_group(
     for identity, rows in aggregated.groupby("identity"):
         levels = {int(images[index][0, 0, 0]) for index in rows.index}
         assert levels == {LEVELS[identity]}, f"{identity} was aggregated with another identity"
+
+
+def test_a_frame_wise_aggregator_keeps_the_frame_names(
+    script: ModuleType, dataset: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A de-anonymizer returns one frame per input and combines nothing, so every frame still answers
+    to the name it arrived under and the output stays comparable to the anonymized input.
+    """
+    frames_path, split_path = dataset
+    output_path = frames_path.parent.parent / "aggregate_frame" / "video_frame_bicubic" / "structure.parquet"
+    monkeypatch.setitem(script.AGGREGATORS, "frame_bicubic", BicubicFrameAggregator())
+
+    script.main(frames_path, split_path, output_path, "video_frame_bicubic")
+    aggregated, images = read_all(output_path)
+
+    # Nothing collapsed, the names came through, and the frames were written here rather than
+    # pointed at: bicubic produces new pixels, so the reuse shortcut must not have fired.
+    original = pd.read_parquet(frames_path)
+    assert len(aggregated) == len(original)
+    assert sorted(aggregated["frame"]) == sorted(original["frame"])
+    assert not any(path.startswith("..") for path in aggregated["path"])
+    assert all(image.shape == (SIZE, SIZE, 3) for image in images)
 
 
 def test_the_fold_is_not_written_out(script: ModuleType, dataset: tuple[Path, Path]) -> None:
