@@ -24,9 +24,7 @@ class Classifier:
         self.model.fit(np.asarray(embeddings, dtype=float))
         self.labels = np.asarray(labels)
 
-    def classify(
-        self, embeddings: Embeddings, n_neighbors: Optional[int] = None
-    ) -> tuple[NDArray, NDArray]:
+    def classify(self, embeddings: Embeddings, n_neighbors: Optional[int] = None) -> tuple[NDArray, NDArray]:
         """
         Return the ranked candidate labels and their distances for every embedding.
         :param embeddings: The query embeddings with shape (num_embeddings, embedding_dim)
@@ -35,9 +33,7 @@ class Classifier:
                  neighbours are ordered from the closest gallery neighbour to the farthest.
         """
         if self.labels is None:
-            raise RuntimeError(
-                "The classifier has to be fitted before it can classify embeddings."
-            )
+            raise RuntimeError("The classifier has to be fitted before it can classify embeddings.")
         distances, indices = self.model.kneighbors(
             np.asarray(embeddings, dtype=float),
             n_neighbors=n_neighbors,

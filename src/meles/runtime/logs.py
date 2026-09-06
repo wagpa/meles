@@ -22,9 +22,11 @@ from pathlib import Path
 
 # The attributes every LogRecord carries. Anything else was passed by the caller via 'extra' and is
 # appended to the message, so that logger.debug("...", extra={"path": p}) actually shows the path.
-_BUILTIN_RECORD_ATTRS = set(
-    logging.LogRecord("", 0, "", 0, "", None, None).__dict__
-) | {"message", "asctime", "taskName"}
+_BUILTIN_RECORD_ATTRS = set(logging.LogRecord("", 0, "", 0, "", None, None).__dict__) | {
+    "message",
+    "asctime",
+    "taskName",
+}
 
 
 class ExtraFormatter(logging.Formatter):
@@ -32,11 +34,7 @@ class ExtraFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         message = super().format(record)
-        extras = {
-            key: value
-            for key, value in record.__dict__.items()
-            if key not in _BUILTIN_RECORD_ATTRS
-        }
+        extras = {key: value for key, value in record.__dict__.items() if key not in _BUILTIN_RECORD_ATTRS}
         if extras:
             message += " " + " ".join(f"{key}={value!r}" for key, value in extras.items())
         return message

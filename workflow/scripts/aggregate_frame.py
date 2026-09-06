@@ -14,6 +14,7 @@ from meles.frame_aggregation.aggregator import FrameAggregator, NoFrameAggregato
 # Fix snakemake typechecking errors
 if TYPE_CHECKING:
     from snakemake.script import Snakemake
+
     snakemake: Snakemake
 
 # Configure the module logger. Logs are passed into the Snakemake configured logfile.
@@ -53,6 +54,7 @@ AGGREGATORS = {
     "frame_bicubic": resample.BicubicFrameAggregator(),
 }
 
+
 def resolve(frame_aggregator: str) -> tuple[list[str], FrameAggregator]:
     """
     Read a '{scope}_{method}' key as the columns defining a group and the aggregator to collapse it.
@@ -80,6 +82,7 @@ def resolve(frame_aggregator: str) -> tuple[list[str], FrameAggregator]:
         raise ValueError(f"Unknown aggregation method {method!r} in {frame_aggregator!r}")
     return ALWAYS_GROUPED + separators, aggregator
 
+
 def unchanged(before: Images, after: Images) -> bool:
     """
     Whether an aggregator handed its input straight back, i.e. produced no new pixels.
@@ -95,11 +98,13 @@ def unchanged(before: Images, after: Images) -> bool:
     """
     return len(before) == len(after) and all(a is b for a, b in zip(before, after))
 
+
 def read(path: Path):
     image = cv2.imread(str(path))
     if image is None:
         raise ValueError(f"Image not found: {path}")
     return image
+
 
 def main(input_path: Path, split_path: Path, output_path: Path, method: str):
     # Crate the output directory if it does not exist
@@ -126,7 +131,7 @@ def main(input_path: Path, split_path: Path, output_path: Path, method: str):
     # Collapse the frames of every group into the one or more frames the aggregator returns. This is
     # the pixel-level counterpart of 'aggregate_embedding': many anonymized observations are combined
     # before anything has looked at them, rather than after each was embedded on its own.
-    logger.debug("Aggregating frames", extra={ "method": method, "len": len(structure_df) })
+    logger.debug("Aggregating frames", extra={"method": method, "len": len(structure_df)})
     grouped = structure_df.groupby(group_by, sort=False)
     # The bar advances once per group rather than once per frame, and 'mininterval' keeps even that
     # from writing megabytes of carriage returns into the job log.
@@ -170,13 +175,15 @@ def main(input_path: Path, split_path: Path, output_path: Path, method: str):
             os.makedirs(image_output_path.parent, exist_ok=True)
             if not cv2.imwrite(str(image_output_path), image):
                 raise ValueError(f"Failed to write aggregated frame: {image_output_path}")
-            made.append({
-                "identity": identity,
-                "video": video,
-                "frame": frame,
-                "frame_suffix": suffix,
-                "path": str(image_output_path.relative_to(output_path.parent)),
-            })
+            made.append(
+                {
+                    "identity": identity,
+                    "video": video,
+                    "frame": frame,
+                    "frame_suffix": suffix,
+                    "path": str(image_output_path.relative_to(output_path.parent)),
+                }
+            )
 
         # A group that lost every frame can never be matched, so it silently caps the achievable
         # accuracy. Report it instead of letting it disappear.
@@ -187,22 +194,29 @@ def main(input_path: Path, split_path: Path, output_path: Path, method: str):
         aggregated_dfs.append(pd.DataFrame(made))
 
     if lost:
-        logger.warning("Groups without an aggregated frame", extra={
-            "method": method,
-            "lost": lost,
-            "groups": grouped.ngroups,
-        })
+        logger.warning(
+            "Groups without an aggregated frame",
+            extra={
+                "method": method,
+                "lost": lost,
+                "groups": grouped.ngroups,
+            },
+        )
 
     # Write the full dataset back. It now contains the aggregated frames per group.
     structure_df = pd.concat(aggregated_dfs, ignore_index=True) if aggregated_dfs else structure_df.iloc[:0]
-    logger.info("Aggregated frames", extra={
-        "method": method,
-        "len": len(structure_df),
-        "groups": grouped.ngroups,
-        "reused": reused,
-        "written": written,
-    })
+    logger.info(
+        "Aggregated frames",
+        extra={
+            "method": method,
+            "len": len(structure_df),
+            "groups": grouped.ngroups,
+            "reused": reused,
+            "written": written,
+        },
+    )
     structure_df[["identity", "video", "frame", "frame_suffix", "path"]].to_parquet(output_path)
+
 
 if __name__ == "__main__":
     # Snakemake only names the log file; a script rule has to redirect into it itself.

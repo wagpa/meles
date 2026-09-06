@@ -27,9 +27,7 @@ class ConsensusEmbeddingAggregator(EmbeddingAggregator):
     beta: float = 1.0
     eps: float = 1e-8
 
-    def __init__(
-        self, use_similarity: bool = True, beta: float = 1.0, eps: float = 1e-8
-    ):
+    def __init__(self, use_similarity: bool = True, beta: float = 1.0, eps: float = 1e-8):
         super().__init__()
         self.use_similarity = use_similarity
         self.beta = beta
@@ -42,15 +40,11 @@ class ConsensusEmbeddingAggregator(EmbeddingAggregator):
             return [Xn[0].tolist()]
 
         S = Xn @ Xn.T  # unit-norm inputs, so the dot product is the cosine similarity
-        consensus = (S.sum(axis=1) - 1.0) / (
-            n - 1
-        )  # leave-one-out agreement with the rest
+        consensus = (S.sum(axis=1) - 1.0) / (n - 1)  # leave-one-out agreement with the rest
 
         sign = 1.0 if self.use_similarity else -1.0
         scaled = sign * self.beta * consensus
-        weights = np.exp(
-            scaled - scaled.max()
-        )  # softmax, shifted for numerical stability
+        weights = np.exp(scaled - scaled.max())  # softmax, shifted for numerical stability
         weights /= weights.sum() + self.eps
 
         return [(weights @ Xn).tolist()]

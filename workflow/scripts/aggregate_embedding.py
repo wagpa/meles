@@ -10,6 +10,7 @@ from meles.embedding_aggregation.aggregator import EmbeddingAggregator, NoEmbedd
 # Fix snakemake typechecking errors
 if TYPE_CHECKING:
     from snakemake.script import Snakemake
+
     snakemake: Snakemake
 
 # Configure the module logger. Logs are passed into the Snakemake configured logfile.
@@ -41,19 +42,16 @@ AGGREGATORS = {
     "pooling_min": pooling.MinPoolingEmbeddingAggregator(),
     "pooling_max": pooling.MaxPoolingEmbeddingAggregator(),
     "pooling_median": pooling.MedianPoolingEmbeddingAggregator(),
-    "clustering_mean_d1_min3":
-        clustering.MeanClusteringAggregator(distance_threshold=1.0, min_cluster_size=3),
-    "clustering_mean_d08_min3":
-        clustering.MeanClusteringAggregator(distance_threshold=0.8, min_cluster_size=3),
-    "clustering_median_d1_min3":
-        clustering.MedianClusteringAggregator(distance_threshold=1.0, min_cluster_size=3),
-    "clustering_median_d08_min3":
-        clustering.MedianClusteringAggregator(distance_threshold=0.8, min_cluster_size=3),
+    "clustering_mean_d1_min3": clustering.MeanClusteringAggregator(distance_threshold=1.0, min_cluster_size=3),
+    "clustering_mean_d08_min3": clustering.MeanClusteringAggregator(distance_threshold=0.8, min_cluster_size=3),
+    "clustering_median_d1_min3": clustering.MedianClusteringAggregator(distance_threshold=1.0, min_cluster_size=3),
+    "clustering_median_d08_min3": clustering.MedianClusteringAggregator(distance_threshold=0.8, min_cluster_size=3),
     "consensus_beta1": consensus.ConsensusEmbeddingAggregator(beta=1.0),
     "consensus_beta5": consensus.ConsensusEmbeddingAggregator(beta=5.0),
     "consensus_beta20": consensus.ConsensusEmbeddingAggregator(beta=20.0),
     "normweighted": normweighted.NormWeightedEmbeddingAggregator(),
 }
+
 
 def resolve(embedding_aggregator: str) -> tuple[list[str], EmbeddingAggregator]:
     """
@@ -76,6 +74,7 @@ def resolve(embedding_aggregator: str) -> tuple[list[str], EmbeddingAggregator]:
     if aggregator is None:
         raise ValueError(f"Unknown aggregation method {method!r} in {embedding_aggregator!r}")
     return ALWAYS_GROUPED + separators, aggregator
+
 
 def main(input_path: Path, split_path: Path, output_path: Path, method: str):
     # Crate the output directory if it does not exist
@@ -104,7 +103,7 @@ def main(input_path: Path, split_path: Path, output_path: Path, method: str):
     # group key, so they survive the aggregation and land back in the output for free.
     # An aggregator returns a list, hence the explode; a clustering aggregator whose clusters all
     # fall below 'min_cluster_size' returns none at all, which explodes to a null row and is dropped.
-    logger.debug("Aggregating frames", extra={ "method": method, "len": len(structure_df) })
+    logger.debug("Aggregating frames", extra={"method": method, "len": len(structure_df)})
     groups = structure_df.groupby(group_by).ngroups
     structure_df = (
         structure_df.groupby(group_by)["embedding"]
@@ -119,17 +118,21 @@ def main(input_path: Path, split_path: Path, output_path: Path, method: str):
     # accuracy. Report it instead of letting it disappear.
     lost = groups - structure_df.groupby(group_by).ngroups
     if lost:
-        logger.warning("Groups without an aggregated embedding", extra={
-            "method": method,
-            "lost": lost,
-            "groups": groups,
-        })
+        logger.warning(
+            "Groups without an aggregated embedding",
+            extra={
+                "method": method,
+                "lost": lost,
+                "groups": groups,
+            },
+        )
 
     # Write the full dataset back. It now contains the aggregated embeddings per group.
     if "video" not in structure_df:
         structure_df["video"] = ALL_VIDEOS
-    logger.info("Aggregated frames", extra={ "method": method, "len": len(structure_df) })
+    logger.info("Aggregated frames", extra={"method": method, "len": len(structure_df)})
     structure_df[["identity", "video", "fold", "embedding"]].to_parquet(output_path)
+
 
 if __name__ == "__main__":
     # Snakemake only names the log file; a script rule has to redirect into it itself.

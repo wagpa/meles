@@ -2,6 +2,7 @@ from abc import abstractmethod, ABC
 from meles.common import Embeddings
 import numpy as np
 
+
 def normalized(embeddings: Embeddings) -> Embeddings:
     arr = np.asarray(embeddings, dtype=np.float64)
     norms = np.linalg.norm(arr, axis=1, keepdims=True)

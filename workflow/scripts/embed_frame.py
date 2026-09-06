@@ -11,6 +11,7 @@ from meles.recognizer.frame import FrameEmbedder
 # Fix snakemake typechecking errors
 if TYPE_CHECKING:
     from snakemake.script import Snakemake
+
     snakemake: Snakemake
 
 # Configure the module logger. Logs are passed into the Snakemake configured logfile.
@@ -26,6 +27,7 @@ EMBEDDERS = {
     "ghostfacenet": FrameEmbedder(models.GHOSTFACENET),
 }
 
+
 def main(input_path: Path, output_path: Path, method: str):
     # Crate the output directory if it does not exist
     logger.debug("Generating output directory")
@@ -39,7 +41,7 @@ def main(input_path: Path, output_path: Path, method: str):
     # Read the input dataset structure and pass it to the anonymizer
     structure_df = pd.read_parquet(input_path)
     structure_df_paths = [str(input_path.parent / path) for path in structure_df["path"]]
-    logger.debug("Embedding frames", extra={ "method": method, "len": len(structure_df) })
+    logger.debug("Embedding frames", extra={"method": method, "len": len(structure_df)})
     # noinspection bad-index
     structure_df["embedding"] = embedder.embed(structure_df_paths)
 
@@ -56,15 +58,19 @@ def main(input_path: Path, output_path: Path, method: str):
     # rules downstream of the job that actually produced it.
     missing = int(structure_df["embedding"].isna().sum())
     if missing:
-        logger.warning("Dropping frames without an embedding", extra={
-            "method": method,
-            "missing": missing,
-            "len": len(structure_df),
-        })
+        logger.warning(
+            "Dropping frames without an embedding",
+            extra={
+                "method": method,
+                "missing": missing,
+                "len": len(structure_df),
+            },
+        )
         structure_df = structure_df.dropna(subset=["embedding"]).reset_index(drop=True)
 
     # Write the full dataset back. It now contains created embedding for each frame.
     structure_df.to_parquet(output_path)
+
 
 if __name__ == "__main__":
     # Snakemake only names the log file; a script rule has to redirect into it itself.

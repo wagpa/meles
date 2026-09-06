@@ -9,10 +9,12 @@ from meles.runtime import logs, runtime
 # Fix snakemake typechecking errors
 if TYPE_CHECKING:
     from snakemake.script import Snakemake
+
     snakemake: Snakemake
 
 # Configure the module logger. Logs are passed into the Snakemake configured logfile.
 logger = logging.getLogger(__name__)
+
 
 def main(gallery_path: Path, samples_path: Path, output_path: Path, method: Dict):
     # Crate the output directory if it does not exist
@@ -62,12 +64,7 @@ def main(gallery_path: Path, samples_path: Path, output_path: Path, method: Dict
         y_samples = samples_k_df["identity"].to_numpy()
         n_neighbors = min(scoring.K, len(gallery_k_df))
         classes = scoring.label_space(y_gallery, y_samples)
-        score_matrix = scoring.vote_matrix(
-            classifier,
-            embeddings=x_samples,
-            classes=classes,
-            n_neighbors=n_neighbors
-        )
+        score_matrix = scoring.vote_matrix(classifier, embeddings=x_samples, classes=classes, n_neighbors=n_neighbors)
 
         # Lastly, generate the accuracy scores
         keys = scoring.video_keys(samples_k_df)
@@ -79,8 +76,9 @@ def main(gallery_path: Path, samples_path: Path, output_path: Path, method: Dict
 
     # Store the results, tagged with the wildcard combination that produced them. Without the tag
     # the rows are indistinguishable once 'collect' concatenates every point of the experiment.
-    logger.info("Scored experiment", extra={ **method, "folds": len(metrics) })
+    logger.info("Scored experiment", extra={**method, "folds": len(metrics)})
     pd.DataFrame(metrics).assign(**method).to_parquet(output_path)
+
 
 if __name__ == "__main__":
     # Snakemake only names the log file; a script rule has to redirect into it itself.
@@ -101,5 +99,5 @@ if __name__ == "__main__":
             "samples_frame_aggregation": snakemake.wildcards.get("samples_frame_aggregation"),
             "samples_frame_embedding": snakemake.wildcards.get("samples_frame_embedding"),
             "samples_embedding_aggregation": snakemake.wildcards.get("samples_embedding_aggregation"),
-        }
+        },
     )

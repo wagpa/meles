@@ -8,10 +8,12 @@ from meles.runtime import logs, runtime
 # Fix snakemake typechecking errors
 if TYPE_CHECKING:
     from snakemake.script import Snakemake
+
     snakemake: Snakemake
 
 # Configure the module logger. Logs are passed into the Snakemake configured logfile.
 logger = logging.getLogger(__name__)
+
 
 def main(dataset_paths: list[tuple[str, Path]], output_path: Path):
     # Crate the output directory if it does not exist
@@ -33,6 +35,7 @@ def main(dataset_paths: list[tuple[str, Path]], output_path: Path):
         extra={"files": len(dataset_paths), "rows": len(collected)},
     )
     collected.to_parquet(output_path)
+
 
 def named_inputs(inputs) -> list[tuple[str, Path]]:
     """
@@ -65,6 +68,7 @@ def named_inputs(inputs) -> list[tuple[str, Path]]:
             f"dropped from the collection: {missing}"
         )
     return pairs
+
 
 if __name__ == "__main__":
     # Snakemake only names the log file; a script rule has to redirect into it itself.

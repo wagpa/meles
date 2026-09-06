@@ -6,9 +6,7 @@ import numpy as np
 from meles.common import FacialArea, Image
 
 
-def facial_region(
-    image: np.ndarray, area: FacialArea
-) -> tuple[int, int, int, int]:
+def facial_region(image: np.ndarray, area: FacialArea) -> tuple[int, int, int, int]:
     """
     Clips a detected facial area to the bounds of the image so that it can safely be
     used to slice it.
@@ -58,9 +56,7 @@ class GaussianBlurAnonymizer(Anonymizer):
         # OpenCV requires an odd kernel size, sigma=0 derives the deviation from the kernel.
         kernel = max(3, int(max(w, h) * self.strength) | 1)
         anonymized = image.copy()
-        anonymized[y : y + h, x : x + w] = cv2.GaussianBlur(
-            anonymized[y : y + h, x : x + w], (kernel, kernel), 0
-        )
+        anonymized[y : y + h, x : x + w] = cv2.GaussianBlur(anonymized[y : y + h, x : x + w], (kernel, kernel), 0)
         return anonymized
 
 
@@ -82,9 +78,7 @@ class PixelationAnonymizer(Anonymizer):
             interpolation=cv2.INTER_AREA,
         )
         anonymized = image.copy()
-        anonymized[y : y + h, x : x + w] = cv2.resize(
-            reduced, (w, h), interpolation=cv2.INTER_NEAREST
-        )
+        anonymized[y : y + h, x : x + w] = cv2.resize(reduced, (w, h), interpolation=cv2.INTER_NEAREST)
         return anonymized
 
 

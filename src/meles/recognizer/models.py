@@ -64,7 +64,9 @@ GHOSTFACENET = EmbedderSpec(
     name="GhostFaceNet",
     weights=weights.WeightSpec(
         file_name="ghostface_fp32.onnx",
-        url=("https://raw.githubusercontent.com/andestech/ModelZoo/4d25c9ffe36ecb805ae7a6443b9079ab5b9b98d3/GhostFaceNet/Model/ghostface_fp32.onnx"),
+        url=(
+            "https://raw.githubusercontent.com/andestech/ModelZoo/4d25c9ffe36ecb805ae7a6443b9079ab5b9b98d3/GhostFaceNet/Model/ghostface_fp32.onnx"
+        ),
         sha256="e8c60ea19ec09ae0b1d30460426fac783c290b4e76c5c7e582e159c8906480ce",
     ),
     output_dim=512,

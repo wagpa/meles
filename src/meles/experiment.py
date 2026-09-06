@@ -3,15 +3,16 @@ from typing import Any, List, Dict
 from itertools import product
 
 LEG_DEFAULTS = {
-    "frame_anonymizer": 'none',
+    "frame_anonymizer": "none",
     # Both aggregators carry their scope, as '{scope}_{method}'. The frame aggregator only has the
     # 'video' scope, since collapsing the videos of an identity into one image would leave the rules
     # after it, all keyed by identity-video, nothing to key on.
-    "frame_aggregator": 'video_none',
-    "frame_recognizer": 'arcface',
+    "frame_aggregator": "video_none",
+    "frame_recognizer": "arcface",
     # The default keeps every video of an identity separate and aggregates nothing within them.
-    "embedding_aggregator": 'video_none',
+    "embedding_aggregator": "video_none",
 }
+
 
 @dataclass(frozen=True)
 class ExperimentLeg:
@@ -37,11 +38,12 @@ def parse_experiment(spec: dict[str, Any]) -> Experiment:
     name = spec["name"] or "unknown"
 
     # Get the experiment legs, the gallery defaults to the samples. Each should be a dict of string(s).
-    samples_spec = { **LEG_DEFAULTS, **spec["samples"] }
-    gallery_spec = { **samples_spec, **spec["gallery"] }
+    samples_spec = {**LEG_DEFAULTS, **spec["samples"]}
+    gallery_spec = {**samples_spec, **spec["gallery"]}
 
     def dict_lists(d: Dict[str, Any]) -> Dict[str, List[str]]:
-        return { k: [v] if isinstance(v, str) else v for k, v in d.items() }
+        return {k: [v] if isinstance(v, str) else v for k, v in d.items()}
+
     samples_specs = dict_lists(samples_spec)
     gallery_specs = dict_lists(gallery_spec)
 

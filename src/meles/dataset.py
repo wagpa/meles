@@ -54,20 +54,14 @@ def truncate_dataset(
 ) -> pd.DataFrame:
     # Keep only identities that have at least MIN_VIDEOS_PER_IDENTITY videos.
     videos_per_identity = dataset.groupby("identity")["video"].nunique()
-    eligible_identities = videos_per_identity[
-        videos_per_identity >= min_videos_per_identity
-    ].index
+    eligible_identities = videos_per_identity[videos_per_identity >= min_videos_per_identity].index
     dataset = dataset[dataset["identity"].isin(eligible_identities)].copy()
 
     # Keep only the first MAX_FRAMES_PER_VIDEO frames of each video. To do that, first
     # determine the natural ordering of frames within each video via the frame index
     # encoded in the file name (e.g. 'aligned_detect_5.1700.jpg' -> 1700) and then drop.
     dataset = dataset.sort_values(["identity", "video", "frame"])
-    dataset = (
-        dataset.groupby(["identity", "video"], sort=False)
-        .head(max_frames_per_video)
-        .reset_index(drop=True)
-    )
+    dataset = dataset.groupby(["identity", "video"], sort=False).head(max_frames_per_video).reset_index(drop=True)
     return dataset
 
 
@@ -86,9 +80,7 @@ def split_dataset(
     """
     # Rank the distinct videos of each identity by their natural (ascending) order, so
     # that the three lowest-numbered videos of every identity receive ranks 1, 2 and 3.
-    video_rank = dataset.groupby("identity")["video"].transform(
-        lambda videos: videos.rank(method="dense")
-    )
+    video_rank = dataset.groupby("identity")["video"].transform(lambda videos: videos.rank(method="dense"))
     is_train = video_rank <= train_videos
 
     train = dataset[is_train].reset_index(drop=True)

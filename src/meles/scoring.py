@@ -64,9 +64,7 @@ def vote_matrix(
     :return: The row-normalized class scores with shape (num_queries, num_classes)
     """
     class_to_idx = {label: i for i, label in enumerate(classes)}
-    neighbor_labels, distances = classifier.classify(
-        embeddings, n_neighbors=n_neighbors
-    )
+    neighbor_labels, distances = classifier.classify(embeddings, n_neighbors=n_neighbors)
     weights = np.clip(1.0 - distances, 0.0, None)
 
     scores = np.zeros((len(neighbor_labels), len(classes)))
@@ -102,9 +100,7 @@ def video_keys(structure: pd.DataFrame) -> pd.MultiIndex:
     )
 
 
-def pool_per_video(
-    scores: NDArray, keys: pd.MultiIndex
-) -> tuple[NDArray, NDArray]:
+def pool_per_video(scores: NDArray, keys: pd.MultiIndex) -> tuple[NDArray, NDArray]:
     """
     Fuse per-query class scores into one score vector per video by averaging.
 
@@ -113,11 +109,7 @@ def pool_per_video(
     :return: A tuple (video_scores, identities) of the pooled scores and the true
              identity of every pooled video
     """
-    pooled = (
-        pd.DataFrame(scores, index=keys)
-        .groupby(level=["identity", "video"], sort=False)
-        .mean()
-    )
+    pooled = pd.DataFrame(scores, index=keys).groupby(level=["identity", "video"], sort=False).mean()
     identities = pooled.index.get_level_values("identity").to_numpy()
     return pooled.to_numpy(), identities
 
@@ -138,12 +130,7 @@ def top_k_accuracies(
     :param ks: The values of k to report
     :return: The accuracies keyed as "top-{k}"
     """
-    return {
-        f"top-{k}": top_k_accuracy_score(
-            y_true, scores, k=min(k, len(classes) - 1), labels=classes
-        )
-        for k in ks
-    }
+    return {f"top-{k}": top_k_accuracy_score(y_true, scores, k=min(k, len(classes) - 1), labels=classes) for k in ks}
 
 
 def row_accuracy(scores: NDArray, y_true: Sequence, classes: NDArray) -> float:
@@ -185,9 +172,7 @@ def single_frame_accuracy(
     accuracies = []
     for repeat in range(repeats):
         seed = None if random_state is None else random_state + repeat
-        drawn = frame.groupby(level=["identity", "video"], sort=False).sample(
-            n=1, random_state=seed
-        )
+        drawn = frame.groupby(level=["identity", "video"], sort=False).sample(n=1, random_state=seed)
         accuracies.append(drawn["correct"].mean())
     return float(np.mean(accuracies)), float(np.std(accuracies))
 

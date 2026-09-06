@@ -37,6 +37,7 @@ class MaxPoolingEmbeddingAggregator(EmbeddingAggregator):
     def aggregate(self, embeddings: Embeddings) -> Embeddings:
         return np.max(normalized(embeddings), axis=0, keepdims=True).tolist()
 
+
 # TODO: will potentially produce zero embeddings for regularized recognizers
 class MinPoolingEmbeddingAggregator(EmbeddingAggregator):
     """
