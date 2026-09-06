@@ -54,23 +54,39 @@ experiment:
   #    - identity_consensus_beta1
   #    - identity_normweighted
 
-  name: arcface_all_combinations
+  #name: arcface_all_combinations
+  #samples:
+  #  frame_anonymizer:
+  #  - none
+  #  - gaussianblur
+  #  - blackbar
+  #  - pixelation
+  #  frame_aggregator: video_none
+  #  frame_recognizer: arcface
+  #  embedding_aggregator:
+  #    - video_none
+  #    - video_pooling_mean
+  #    - video_consensus_beta1
+  #    - video_normweighted
+  #gallery:
+  #  embedding_aggregator:
+  #    - video_none
+  #    - identity_pooling_mean
+  #    - identity_consensus_beta1
+  #    - identity_normweighted
+
+  name: arcface_bicubic_against_clear_gallery
   samples:
     frame_anonymizer:
     - none
     - gaussianblur
     - blackbar
     - pixelation
-    frame_aggregator: video_none
+    frame_aggregator:
+    - video_none
+    - video_frame_bicubic
     frame_recognizer: arcface
-    embedding_aggregator:
-      - video_none
-      - video_pooling_mean
-      - video_consensus_beta1
-      - video_normweighted
   gallery:
-    embedding_aggregator:
-      - video_none
-      - identity_pooling_mean
-      - identity_consensus_beta1
-      - identity_normweighted
+    frame_anonymizer: none
+    frame_aggregator: video_none
+    embedding_aggregator: video_normweighted
