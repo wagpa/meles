@@ -15,11 +15,11 @@ SPEC = {
     "samples": {
         "frame_anonymizer": ["blackbar", "pixelation"],
         "frame_recognizer": "arcface",
-        "frame_aggregator": "video_none",
+        "embedding_aggregator": "video_none",
     },
     "gallery": {
         "frame_anonymizer": ["none"],
-        "frame_aggregator": ["video_none", "identity_pooling_mean"],
+        "embedding_aggregator": ["video_none", "identity_pooling_mean"],
     },
 }
 
@@ -31,7 +31,7 @@ def test_every_field_becomes_a_list_of_methods() -> None:
     assert experiment.name == "clear_gallery"
     assert experiment.samples.frame_anonymizer == ["blackbar", "pixelation"]
     assert experiment.samples.frame_recognizer == ["arcface"]
-    assert experiment.samples.frame_aggregator == ["video_none"]
+    assert experiment.samples.embedding_aggregator == ["video_none"]
 
 
 def test_the_gallery_inherits_what_it_does_not_override() -> None:
@@ -40,7 +40,7 @@ def test_the_gallery_inherits_what_it_does_not_override() -> None:
 
     assert experiment.gallery.frame_recognizer == ["arcface"]
     assert experiment.gallery.frame_anonymizer == ["none"]
-    assert experiment.gallery.frame_aggregator == ["video_none", "identity_pooling_mean"]
+    assert experiment.gallery.embedding_aggregator == ["video_none", "identity_pooling_mean"]
 
 
 def test_omitted_fields_fall_back_to_the_defaults() -> None:
@@ -48,4 +48,4 @@ def test_omitted_fields_fall_back_to_the_defaults() -> None:
 
     assert experiment.samples.frame_anonymizer == ["none"]
     assert experiment.samples.frame_recognizer == ["arcface"]
-    assert experiment.gallery.frame_aggregator == ["video_none"]
+    assert experiment.gallery.embedding_aggregator == ["video_none"]

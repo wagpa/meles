@@ -95,9 +95,9 @@ if __name__ == "__main__":
         method={
             "gallery_frame_anonymization": snakemake.wildcards.get("gallery_frame_anonymization"),
             "gallery_frame_embedding": snakemake.wildcards.get("gallery_frame_embedding"),
-            "gallery_frame_aggregation": snakemake.wildcards.get("gallery_frame_aggregation"),
+            "gallery_embedding_aggregation": snakemake.wildcards.get("gallery_embedding_aggregation"),
             "samples_frame_anonymization": snakemake.wildcards.get("samples_frame_anonymization"),
             "samples_frame_embedding": snakemake.wildcards.get("samples_frame_embedding"),
-            "samples_frame_aggregation": snakemake.wildcards.get("samples_frame_aggregation"),
+            "samples_embedding_aggregation": snakemake.wildcards.get("samples_embedding_aggregation"),
         }
     )

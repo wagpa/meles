@@ -7,7 +7,7 @@ LEG_DEFAULTS = {
     "frame_recognizer": 'arcface',
     # The aggregator carries its scope: '{video|identity}_{method}'. The default keeps every video
     # of an identity separate and aggregates nothing within them.
-    "frame_aggregator": 'video_none',
+    "embedding_aggregator": 'video_none',
 }
 
 @dataclass(frozen=True)
@@ -16,7 +16,7 @@ class ExperimentLeg:
 
     frame_anonymizer: List[str]
     frame_recognizer: List[str]
-    frame_aggregator: List[str]
+    embedding_aggregator: List[str]
 
 
 @dataclass(frozen=True)

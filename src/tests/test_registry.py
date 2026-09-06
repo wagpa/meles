@@ -74,11 +74,11 @@ def test_experiment_methods_have_a_registry_entry(script: str, leg: str, experim
 
 
 @pytest.mark.parametrize("leg", ["samples", "gallery"])
-def test_frame_aggregators_name_a_scope_and_a_method(leg: str, experiment: Experiment) -> None:
+def test_embedding_aggregators_name_a_scope_and_a_method(leg: str, experiment: Experiment) -> None:
     """Every configured aggregator has to resolve, i.e. name both a known scope and a known method."""
     resolve = load_script("aggregate_embedding").resolve
 
-    for method in getattr(experiment, leg).frame_aggregator:
+    for method in getattr(experiment, leg).embedding_aggregator:
         group_by, aggregator = resolve(method)
         assert group_by and aggregator is not None
 

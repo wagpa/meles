@@ -33,7 +33,7 @@ SCOPES = {
 # by identity-video, and one uniform output shape is worth more than a column that comes and goes.
 ALL_VIDEOS = "*"
 
-# Every 'frame_aggregator' named by an experiment leg in the config needs an entry here.
+# Every 'embedding_aggregator' named by an experiment leg in the config needs an entry here.
 # noinspection SpellCheckingInspection
 AGGREGATORS = {
     "none": NoAggregator(),
@@ -55,26 +55,26 @@ AGGREGATORS = {
     "normweighted": normweighted.NormWeightedAggregator(),
 }
 
-def resolve(frame_aggregator: str) -> tuple[list[str], Aggregator]:
+def resolve(embedding_aggregator: str) -> tuple[list[str], Aggregator]:
     """
     Read a '{scope}_{method}' key as the columns defining a group and the aggregator to collapse it.
 
-    :param frame_aggregator: The method key, e.g. 'video_pooling_mean' or 'identity_none'
+    :param embedding_aggregator: The method key, e.g. 'video_pooling_mean' or 'identity_none'
     :return: The complete grouping columns, always including the identity and the fold, and the
         aggregator to collapse each group with
     :raises ValueError: If either half names something the registries have no entry for
     """
-    scope, _, method = frame_aggregator.partition("_")
+    scope, _, method = embedding_aggregator.partition("_")
 
     separators = SCOPES.get(scope)
     if separators is None:
         raise ValueError(
-            f"Unknown aggregation scope {scope!r} in {frame_aggregator!r}, expected one of {sorted(SCOPES)}"
+            f"Unknown aggregation scope {scope!r} in {embedding_aggregator!r}, expected one of {sorted(SCOPES)}"
         )
 
     aggregator = AGGREGATORS.get(method)
     if aggregator is None:
-        raise ValueError(f"Unknown aggregation method {method!r} in {frame_aggregator!r}")
+        raise ValueError(f"Unknown aggregation method {method!r} in {embedding_aggregator!r}")
     return ALWAYS_GROUPED + separators, aggregator
 
 def main(input_path: Path, split_path: Path, output_path: Path, method: str):
@@ -141,5 +141,5 @@ if __name__ == "__main__":
         input_path=Path(snakemake.input.dataset),
         split_path=Path(snakemake.input.k_split),
         output_path=Path(snakemake.output.dataset),
-        method=snakemake.wildcards.get("frame_aggregation"),
+        method=snakemake.wildcards.get("embedding_aggregation"),
     )

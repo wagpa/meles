@@ -14,11 +14,11 @@ experiment:
     - blackbar
     - pixelation
     frame_recognizer: arcface
-    frame_aggregator: video_none
+    embedding_aggregator: video_none
   gallery:
     frame_anonymizer:
     - none
-    frame_aggregator:
+    embedding_aggregator:
     - video_none
     - video_pooling_mean
     - identity_pooling_mean

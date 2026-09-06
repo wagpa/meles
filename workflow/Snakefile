@@ -20,13 +20,13 @@ EXPERIMENT = parse_experiment(config["experiment"])
 wildcard_constraints:
     frame_anonymization=r"[^/]+",
     frame_embedding=r"[^/]+",
-    frame_aggregation=r"[^/]+",
+    embedding_aggregation=r"[^/]+",
     gallery_frame_anonymization=r"[^/]+",
     gallery_frame_embedding=r"[^/]+",
-    gallery_frame_aggregation=r"[^/]+",
+    gallery_embedding_aggregation=r"[^/]+",
     samples_frame_anonymization=r"[^/]+",
     samples_frame_embedding=r"[^/]+",
-    samples_frame_aggregation=r"[^/]+",
+    samples_embedding_aggregation=r"[^/]+",
 
 
 # Anonymizes the dataset for each anonymization method. It takes the dataset as input and generates a
@@ -82,7 +82,7 @@ rule embed_frame:
 # Aggregates the frame embeddings of a group into one or more (aggregated) embeddings. This removes the frame reference
 # as multiple frames are potentially combined into one, and is the step the experiment is actually about: it is where
 # many anonymized observations are allowed to reinforce each other.
-# '{frame_aggregation}' names the scope as well as the method, as '{video|identity}_{method}': 'video_*' groups the
+# '{embedding_aggregation}' names the scope as well as the method, as '{video|identity}_{method}': 'video_*' groups the
 # frames of one video, 'identity_*' groups everything the fold holds of one identity. A group never spans folds either
 # way, so the scope only decides how much an attacker is assumed to be able to link together before matching.
 # The fold of every video is merged in here (this is the only rule that reads the split) but nothing is held out yet --
@@ -96,8 +96,8 @@ rule aggregate_embedding:
         dataset=RESULT_PATH / "embed_frame/{frame_anonymization}/{frame_embedding}/structure.parquet",
         k_split=RESULT_PATH / "split/structure.parquet",
     output:
-        dataset=RESULT_PATH / "aggregate_embedding/{frame_anonymization}/{frame_embedding}/{frame_aggregation}/structure.parquet",
-    log: LOG_PATH / "aggregate_embedding/{frame_anonymization}/{frame_embedding}/{frame_aggregation}.log"
+        dataset=RESULT_PATH / "aggregate_embedding/{frame_anonymization}/{frame_embedding}/{embedding_aggregation}/structure.parquet",
+    log: LOG_PATH / "aggregate_embedding/{frame_anonymization}/{frame_embedding}/{embedding_aggregation}.log"
     script: "scripts/aggregate_embedding.py"
 
 
@@ -110,14 +110,14 @@ rule aggregate_embedding:
 # matching its own, merely differently anonymized, copy in the gallery.
 # Input (gallery_dataset): identity (str), video (str), fold (int), embedding (float[])
 # Input (samples_dataset): identity (str), video (str), fold (int), embedding (float[])
-# Output: fold (int), top-1 (float), ..., gallery_frame_anonymization (str), ..., samples_frame_aggregation (str)
+# Output: fold (int), top-1 (float), ..., gallery_frame_anonymization (str), ..., samples_embedding_aggregation (str)
 rule score_experiment:
     input:
-        gallery_dataset=RESULT_PATH / "aggregate_embedding/{gallery_frame_anonymization}/{gallery_frame_embedding}/{gallery_frame_aggregation}/structure.parquet",
-        samples_dataset=RESULT_PATH / "aggregate_embedding/{samples_frame_anonymization}/{samples_frame_embedding}/{samples_frame_aggregation}/structure.parquet",
+        gallery_dataset=RESULT_PATH / "aggregate_embedding/{gallery_frame_anonymization}/{gallery_frame_embedding}/{gallery_embedding_aggregation}/structure.parquet",
+        samples_dataset=RESULT_PATH / "aggregate_embedding/{samples_frame_anonymization}/{samples_frame_embedding}/{samples_embedding_aggregation}/structure.parquet",
     output:
-        dataset=RESULT_PATH / "score_frame/{gallery_frame_anonymization}/{gallery_frame_embedding}/{gallery_frame_aggregation}/-/{samples_frame_anonymization}/{samples_frame_embedding}/{samples_frame_aggregation}/structure.parquet",
-    log: LOG_PATH / "score_frame/{gallery_frame_anonymization}/{gallery_frame_embedding}/{gallery_frame_aggregation}/-/{samples_frame_anonymization}/{samples_frame_embedding}/{samples_frame_aggregation}.log"
+        dataset=RESULT_PATH / "score_frame/{gallery_frame_anonymization}/{gallery_frame_embedding}/{gallery_embedding_aggregation}/-/{samples_frame_anonymization}/{samples_frame_embedding}/{samples_embedding_aggregation}/structure.parquet",
+    log: LOG_PATH / "score_frame/{gallery_frame_anonymization}/{gallery_frame_embedding}/{gallery_embedding_aggregation}/-/{samples_frame_anonymization}/{samples_frame_embedding}/{samples_embedding_aggregation}.log"
     script: "scripts/score.py"
 
 
@@ -130,13 +130,13 @@ rule score_experiment:
 rule collect_recognition:
     input:
         frame=expand(
-            RESULT_PATH / "score_frame/{gallery_frame_anonymization}/{gallery_frame_embedding}/{gallery_frame_aggregation}/-/{samples_frame_anonymization}/{samples_frame_embedding}/{samples_frame_aggregation}/structure.parquet",
+            RESULT_PATH / "score_frame/{gallery_frame_anonymization}/{gallery_frame_embedding}/{gallery_embedding_aggregation}/-/{samples_frame_anonymization}/{samples_frame_embedding}/{samples_embedding_aggregation}/structure.parquet",
             gallery_frame_anonymization=EXPERIMENT.gallery.frame_anonymizer,
             gallery_frame_embedding=EXPERIMENT.gallery.frame_recognizer,
-            gallery_frame_aggregation=EXPERIMENT.gallery.frame_aggregator,
+            gallery_embedding_aggregation=EXPERIMENT.gallery.embedding_aggregator,
             samples_frame_anonymization=EXPERIMENT.samples.frame_anonymizer,
             samples_frame_embedding=EXPERIMENT.samples.frame_recognizer,
-            samples_frame_aggregation=EXPERIMENT.samples.frame_aggregator,
+            samples_embedding_aggregation=EXPERIMENT.samples.embedding_aggregator,
         ),
     output:
         dataset=RESULT_PATH / f"{EXPERIMENT.name}.parquet",
