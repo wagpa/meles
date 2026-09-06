@@ -1,8 +1,8 @@
 import numpy as np
-from meles.aggregation.aggregator import Aggregator, Embeddings, normalized
+from meles.embedding_aggregation.aggregator import EmbeddingAggregator, Embeddings, normalized
 
 
-class MeanPoolingAggregator(Aggregator):
+class MeanPoolingEmbeddingAggregator(EmbeddingAggregator):
     """
     The MeanPoolingAggregator pools all embeddings into a single embedding using the column wise mean.
     """
@@ -14,7 +14,7 @@ class MeanPoolingAggregator(Aggregator):
         return np.mean(normalized(embeddings), axis=0, keepdims=True).tolist()
 
 
-class MedianPoolingAggregator(Aggregator):
+class MedianPoolingEmbeddingAggregator(EmbeddingAggregator):
     """
     The MeanPoolingAggregator pools all embeddings into a single embedding using the column wise mean.
     """
@@ -26,7 +26,7 @@ class MedianPoolingAggregator(Aggregator):
         return np.median(normalized(embeddings), axis=0, keepdims=True).tolist()
 
 
-class MaxPoolingAggregator(Aggregator):
+class MaxPoolingEmbeddingAggregator(EmbeddingAggregator):
     """
     The MaxPoolingAggregator pools all embeddings into a single embedding using the column wise max.
     """
@@ -38,7 +38,7 @@ class MaxPoolingAggregator(Aggregator):
         return np.max(normalized(embeddings), axis=0, keepdims=True).tolist()
 
 # TODO: will potentially produce zero embeddings for regularized recognizers
-class MinPoolingAggregator(Aggregator):
+class MinPoolingEmbeddingAggregator(EmbeddingAggregator):
     """
     The MinPoolingAggregator pools all embeddings into a single embedding using the column wise min.
     """

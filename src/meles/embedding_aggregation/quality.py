@@ -1,8 +1,8 @@
 import numpy as np
-from meles.aggregation.aggregator import Aggregator, Embeddings
+from meles.embedding_aggregation.aggregator import EmbeddingAggregator, Embeddings
 
 
-class QualityAggregator(Aggregator):
+class QualityEmbeddingAggregator(EmbeddingAggregator):
     """
     The QualityAggregator pools all embeddings into a single embedding by weighting the embeddings by their quality.
     """

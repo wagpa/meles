@@ -4,10 +4,10 @@ import numpy as np
 from numpy.typing import NDArray
 from sklearn.cluster import AgglomerativeClustering
 
-from meles.aggregation.aggregator import Aggregator, Embeddings, normalized
+from meles.embedding_aggregation.aggregator import EmbeddingAggregator, Embeddings, normalized
 
 
-class ClusteringAggregator(Aggregator):
+class ClusteringEmbeddingAggregator(EmbeddingAggregator):
     """
     The ClusteringAggregator groups the embeddings into one or more clusters and reduces each cluster to a single
     representative embedding via a column-wise reduction (e.g. mean or median). Unlike the pooling aggregators it does
@@ -75,7 +75,7 @@ class ClusteringAggregator(Aggregator):
         return np.stack(centroids).tolist()
 
 
-class MeanClusteringAggregator(ClusteringAggregator):
+class MeanClusteringAggregator(ClusteringEmbeddingAggregator):
     """
     The MeanClusteringAggregator clusters the embeddings and returns the column-wise mean of each cluster.
     """
@@ -84,7 +84,7 @@ class MeanClusteringAggregator(ClusteringAggregator):
         return np.mean(cluster, axis=0)
 
 
-class MedianClusteringAggregator(ClusteringAggregator):
+class MedianClusteringAggregator(ClusteringEmbeddingAggregator):
     """
     The MedianClusteringAggregator clusters the embeddings and returns the column-wise median of each cluster.
     """

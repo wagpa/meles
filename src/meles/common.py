@@ -4,6 +4,10 @@ from typing import TypeAlias, Any, Sequence, List, Union, IO
 import numpy as np
 from numpy.typing import NDArray
 
+Image: TypeAlias = NDArray[np.uint8]
+
+Images: TypeAlias = Sequence[Image]
+
 Frame: TypeAlias = Union[str, NDArray[Any], IO[bytes]]
 
 Frames: TypeAlias = Sequence[Frame]

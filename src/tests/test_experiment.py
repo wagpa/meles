@@ -14,6 +14,7 @@ SPEC = {
     "name": "clear_gallery",
     "samples": {
         "frame_anonymizer": ["blackbar", "pixelation"],
+        "frame_aggregator": "video_none",
         "frame_recognizer": "arcface",
         "embedding_aggregator": "video_none",
     },
@@ -39,6 +40,7 @@ def test_the_gallery_inherits_what_it_does_not_override() -> None:
     experiment = parse_experiment(SPEC)
 
     assert experiment.gallery.frame_recognizer == ["arcface"]
+    assert experiment.gallery.frame_aggregator == ["video_none"]
     assert experiment.gallery.frame_anonymizer == ["none"]
     assert experiment.gallery.embedding_aggregator == ["video_none", "identity_pooling_mean"]
 
@@ -47,5 +49,6 @@ def test_omitted_fields_fall_back_to_the_defaults() -> None:
     experiment = parse_experiment({"name": "minimal", "samples": {}, "gallery": {}})
 
     assert experiment.samples.frame_anonymizer == ["none"]
+    assert experiment.samples.frame_aggregator == ["video_none"]
     assert experiment.samples.frame_recognizer == ["arcface"]
     assert experiment.gallery.embedding_aggregator == ["video_none"]

@@ -14,9 +14,11 @@ log_dir: logs
 split_k: 3
 split_shuffle: True
 
-# The experiment configuration. 'embedding_aggregator' names a scope as well as a method:
-# 'video_*' aggregates the frames of one video, 'identity_*' aggregates everything a fold holds of
-# one identity. Fields the gallery leg does not name are inherited from the samples leg.
+# The experiment configuration. Both aggregators name a scope as well as a method. For
+# 'embedding_aggregator', 'video_*' aggregates the embeddings of one video and 'identity_*'
+# everything a fold holds of one identity. 'frame_aggregator' combines the pixels instead, before
+# the recognizer ever sees them, and only has the 'video' scope.
+# Fields the gallery leg does not name are inherited from the samples leg.
 experiment:
   #name: arcface_against_clear_gallery
   #samples:
@@ -59,6 +61,7 @@ experiment:
     - gaussianblur
     - blackbar
     - pixelation
+    frame_aggregator: video_none
     frame_recognizer: arcface
     embedding_aggregator:
       - video_none

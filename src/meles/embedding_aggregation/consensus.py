@@ -1,10 +1,10 @@
 import numpy as np
 
-from meles.aggregation.aggregator import Aggregator, normalized
+from meles.embedding_aggregation.aggregator import EmbeddingAggregator, normalized
 from meles.common import Embeddings
 
 
-class ConsensusAggregator(Aggregator):
+class ConsensusEmbeddingAggregator(EmbeddingAggregator):
     """
     Consensus self-attention (attention family, embeddings-only).
 

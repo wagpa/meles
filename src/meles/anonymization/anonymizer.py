@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 import cv2
 import numpy as np
 
-from meles.common import FacialArea
+from meles.common import FacialArea, Image
 
 
 def facial_region(
@@ -28,7 +28,7 @@ class Anonymizer(ABC):
     """Anonymizes a facial area in an image."""
 
     @abstractmethod
-    def apply(self, image: np.ndarray, area: FacialArea) -> np.ndarray:
+    def apply(self, image: Image, area: FacialArea) -> Image:
         """
         Anonymizes the facial area.
 
@@ -40,7 +40,7 @@ class Anonymizer(ABC):
 
 
 class NoAnonymizer(Anonymizer):
-    def apply(self, image: np.ndarray, area: FacialArea) -> np.ndarray:
+    def apply(self, image: Image, area: FacialArea) -> Image:
         return image
 
 
@@ -50,7 +50,7 @@ class GaussianBlurAnonymizer(Anonymizer):
     def __init__(self, strength: float = 0.25):
         self.strength = strength
 
-    def apply(self, image: np.ndarray, area: FacialArea) -> np.ndarray:
+    def apply(self, image: Image, area: FacialArea) -> Image:
         x, y, w, h = facial_region(image, area)
         if w == 0 or h == 0:
             return image.copy()
@@ -70,7 +70,7 @@ class PixelationAnonymizer(Anonymizer):
     def __init__(self, blocks: int = 8):
         self.blocks = blocks
 
-    def apply(self, image: np.ndarray, area: FacialArea) -> np.ndarray:
+    def apply(self, image: Image, area: FacialArea) -> Image:
         x, y, w, h = facial_region(image, area)
         if w == 0 or h == 0:
             return image.copy()
@@ -92,7 +92,7 @@ class BlackBarAnonymizer(Anonymizer):
     def __init__(self):
         pass
 
-    def apply(self, image: np.ndarray, area: FacialArea) -> np.ndarray:
+    def apply(self, image: Image, area: FacialArea) -> Image:
         x, y, w, h = facial_region(image, area)
         anonymized = image.copy()
         cv2.rectangle(anonymized, (x, y), (x + w, y + h), (0, 0, 0), thickness=-1)

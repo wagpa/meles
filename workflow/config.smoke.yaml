@@ -13,6 +13,7 @@ experiment:
     - gaussianblur
     - blackbar
     - pixelation
+    frame_aggregator: video_none
     frame_recognizer: arcface
     embedding_aggregator: video_none
   gallery:

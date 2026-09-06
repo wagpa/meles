@@ -8,7 +8,7 @@ def normalized(embeddings: Embeddings) -> Embeddings:
     return arr / np.where(norms == 0, 1, norms)
 
 
-class Aggregator(ABC):
+class EmbeddingAggregator(ABC):
     """
     The abstract class for an aggregator. It uses the internal recognizer to embed frames and then aggregates the embeddings.
     By default, the aggregator does not aggregate the embeddings. It simply returns the embeddings as is. This will be used as
@@ -23,7 +23,7 @@ class Aggregator(ABC):
         return embeddings
 
 
-class NoAggregator(Aggregator):
+class NoEmbeddingAggregator(EmbeddingAggregator):
     """
     The NoAggregator class does not aggregate the embeddings. It simply returns the embeddings as is. This will be used as
     the experiment baseline.

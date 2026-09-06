@@ -1,10 +1,10 @@
 import numpy as np
 
-from meles.aggregation.aggregator import Aggregator
+from meles.embedding_aggregation.aggregator import EmbeddingAggregator
 from meles.common import Embeddings
 
 
-class NormWeightedAggregator(Aggregator):
+class NormWeightedEmbeddingAggregator(EmbeddingAggregator):
     """
     Norm-weighted average aggregator (embeddings-only).
 

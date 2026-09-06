@@ -21,15 +21,21 @@ SCRIPTS = Path("workflow/scripts")
 CONFIG = Path("workflow/config.yaml")
 
 # Each workflow script's registry, and the experiment-leg field naming the methods it must cover.
-# 'aggregate_embedding' is not here: its keys carry a scope ('{video|identity}_{method}'), so they
-# are checked through the script's own 'resolve' rather than against the bare registry.
+# The two aggregation scripts are not here: their keys carry a scope ('{scope}_{method}'), so they
+# are checked through each script's own 'resolve' rather than against the bare registry.
 REGISTRIES = {
     "anonymize_frame": ("ANONYMIZERS", "frame_anonymizer"),
     "embed_frame": ("EMBEDDERS", "frame_recognizer"),
 }
 
+# Each aggregation script, and the experiment-leg field whose scoped keys its 'resolve' must accept.
+SCOPED_REGISTRIES = {
+    "aggregate_frame": "frame_aggregator",
+    "aggregate_embedding": "embedding_aggregator",
+}
+
 # Every script that has to import, whether or not the configured experiment currently reaches it.
-ALL_SCRIPTS = [*REGISTRIES, "aggregate_embedding"]
+ALL_SCRIPTS = [*REGISTRIES, *SCOPED_REGISTRIES]
 
 
 def load_script(name: str) -> ModuleType:
@@ -73,14 +79,27 @@ def test_experiment_methods_have_a_registry_entry(script: str, leg: str, experim
     )
 
 
+@pytest.mark.parametrize("script", sorted(SCOPED_REGISTRIES))
 @pytest.mark.parametrize("leg", ["samples", "gallery"])
-def test_embedding_aggregators_name_a_scope_and_a_method(leg: str, experiment: Experiment) -> None:
+def test_aggregators_name_a_scope_and_a_method(script: str, leg: str, experiment: Experiment) -> None:
     """Every configured aggregator has to resolve, i.e. name both a known scope and a known method."""
-    resolve = load_script("aggregate_embedding").resolve
+    resolve = load_script(script).resolve
 
-    for method in getattr(experiment, leg).embedding_aggregator:
+    for method in getattr(getattr(experiment, leg), SCOPED_REGISTRIES[script]):
         group_by, aggregator = resolve(method)
         assert group_by and aggregator is not None
+
+
+def test_the_frame_aggregator_refuses_the_identity_scope() -> None:
+    """
+    Aggregating pixels across the videos of an identity leaves no video to name, and every rule
+    after 'aggregate_frame' is keyed by identity-video. Refusing the scope is what keeps that from
+    turning into a plausible-looking number instead of an error.
+    """
+    resolve = load_script("aggregate_frame").resolve
+
+    with pytest.raises(ValueError, match="identity"):
+        resolve("identity_none")
 
 
 def test_embedder_registries_cover_every_model() -> None:

@@ -4,9 +4,12 @@ from itertools import product
 
 LEG_DEFAULTS = {
     "frame_anonymizer": 'none',
+    # Both aggregators carry their scope, as '{scope}_{method}'. The frame aggregator only has the
+    # 'video' scope, since collapsing the videos of an identity into one image would leave the rules
+    # after it, all keyed by identity-video, nothing to key on.
+    "frame_aggregator": 'video_none',
     "frame_recognizer": 'arcface',
-    # The aggregator carries its scope: '{video|identity}_{method}'. The default keeps every video
-    # of an identity separate and aggregates nothing within them.
+    # The default keeps every video of an identity separate and aggregates nothing within them.
     "embedding_aggregator": 'video_none',
 }
 
@@ -15,6 +18,7 @@ class ExperimentLeg:
     """A leg of an experiment."""
 
     frame_anonymizer: List[str]
+    frame_aggregator: List[str]
     frame_recognizer: List[str]
     embedding_aggregator: List[str]
 
