@@ -63,6 +63,21 @@ better for that; 400 images is about 20 identities, 5,000 is about 250.
 Starting at 400 is still the right first move: it gets a complete run end to end in ten minutes and
 tells you whether the pipeline works before you spend a night on it.
 
+**What the corpus size buys, measured.** ArcFace cosine between a de-anonymized frame and the clear
+version of that same frame, on 300 held-out CelebA images — the number that actually matters here,
+since it is identity recovery rather than pixel error:
+
+| condition | mean cosine |
+|---|---:|
+| anonymized (do nothing) | 0.061 |
+| `frame_bicubic` (SEBA's resample attack) | 0.068 |
+| pix2pix, `CORPUS=400` (SEBA's regime) | **0.165** |
+| pix2pix, ~172k images | **0.229** |
+| a different person (floor) | 0.011 |
+
+Both beat the resample attack by a wide margin. The small corpus costs about 28% of the recovered
+signal, which is the price of matching SEBA's data regime rather than only its architecture.
+
 ### `N_EPOCHS` / `N_EPOCHS_DECAY` — the learning-rate schedule
 
 Upstream's `--n_epochs` and `--n_epochs_decay`. The rate is held at `2e-4` for the first and
@@ -170,3 +185,58 @@ A discriminator loss collapsing towards zero while `train_adv` climbs means the 
 won and the adversarial half has stopped contributing. The run does not fail — L1 keeps it
 producing faces — and pix2pix offers no brake for it. SEBA runs it at its defaults, so introducing
 one is a deviation to state, not a default to add.
+
+### `val_l1` is lower than `train_l1`, and that is expected
+
+It looks like the model does better on data it has never seen. It does not. **The two numbers are
+not measured the same way**, and all three differences push in the same direction:
+
+| | `train_l1` | `val_l1` |
+|---|---|---|
+| preprocessing | 286 → random 256 crop | straight resize to 256 |
+| dropout | on (`train` mode) | off (`eval` mode) |
+| when | averaged *across* the epoch, as the model changes | at the end, with the final weights |
+
+The crop is the biggest. It keeps `(256/286)² = 80%` of the area, so the face — where essentially
+all the reconstruction error lives — fills **1.25×** more of the frame. Measured with no model
+involved at all, just anonymized-against-clear on the same 200 images: **0.0523 cropped vs 0.0419
+resized, a ratio of 1.246**, matching the predicted 1.248 exactly.
+
+Dropout adds the rest. On one trained checkpoint, measured on the same images:
+
+| set | preprocessing | mode | L1 |
+|---|---|---|---:|
+| train | 286 → 256 crop | train | 0.0616 ← this is what `train_l1` reports |
+| train | 286 → 256 crop | eval | 0.0580 |
+| train | resize to 256 | eval | **0.0531** |
+| val | resize to 256 | eval | **0.0561** ← this is what `val_l1` reports |
+
+Compared like for like (bottom two rows), training data *is* easier — by 5.6%, which is the mild
+overfitting you would expect from a few hundred images. The reported numbers invert that because
+the crop costs ~9% and dropout ~6%.
+
+Two consequences worth knowing. A gap that stays at a **constant ratio** (this run held 1.17–1.20×
+for all 100 epochs) is this measurement artefact; real overfitting shows as a gap that *widens*.
+And `train_l1` and `val_l1` should not be plotted as if they were the same quantity — compare each
+against itself over time, not against the other.
+
+### Visual quality stops tracking L1
+
+L1 keeps falling long after the pictures stop changing. In a 340-image / 100-epoch run, **75% of
+the total `val_l1` improvement happened by epoch 20 and 91.5% by epoch 40**; `val_l1` bottomed out
+at epoch 85 and was slightly worse by 100. Two things are going on:
+
+- **The previews are stochastic** unless you make them otherwise. pix2pix keeps dropout on at test
+  time, so two renders of the *same* model and image differ from each other by ~0.0085 mean
+  absolute — comparable to the 0.0164 by which `val_l1` improved across all 80 of those epochs.
+  Render noise is on the same scale as the signal, which is enough to make a later epoch look
+  worse than an earlier one. The notebook's `show()` switches to `eval` and restores the previous
+  mode for exactly this reason; if you write your own preview, do the same.
+- **Once the discriminator collapses, only L1 is left.** In that run `train_d` reached 0.026 by
+  epoch 81 while `train_adv` climbed to 6.97. From there the generator is driven almost entirely
+  by the reconstruction term, and L1's preferred solution is to average over plausible detail —
+  i.e. blur. The number improves; the picture does not.
+
+So do not early-stop on L1, and do not read it as image quality. The criterion that matters for
+this project is downstream: does the de-anonymized frame move a recognizer's embedding toward the
+right identity? Measure that (see the table under `CORPUS`).
