@@ -451,3 +451,34 @@ def test_the_checkpoint_carries_the_schedule(tmp_path) -> None:
 
     assert (resumed.n_epochs, resumed.n_epochs_decay) == (7, 3)
     assert resumed.learning_rate_at(9) == trainer.learning_rate_at(9)
+
+
+def test_a_stale_schedule_is_reported_rather_than_applied_silently(tmp_path, caplog) -> None:
+    """
+    Editing the schedule in the notebook and leaving the old checkpoint in place would otherwise
+    train quietly to the old plan -- the checkpoint has to win, so the mismatch has to be said.
+    """
+    written = Pix2PixTrainer("pixelation", device="cpu", n_epochs=100, n_epochs_decay=100)
+    written.epoch = 1
+    path = written.save(tmp_path / "pixelation.pt")
+
+    with caplog.at_level("WARNING"):
+        resumed = Pix2PixTrainer.resume("pixelation", path, device="cpu", n_epochs=50, n_epochs_decay=50)
+
+    assert (resumed.n_epochs, resumed.n_epochs_decay) == (100, 100)
+    # Asserted on the record rather than on caplog.text: the useful part rides in 'extra', which
+    # only 'meles.runtime.logs.ExtraFormatter' renders into the message.
+    (record,) = [entry for entry in caplog.records if "schedule" in entry.message]
+    assert record.configured == (50, 50)
+    assert record.checkpoint == (100, 100)
+    assert "delete" in record.remedy
+
+
+def test_a_matching_schedule_resumes_quietly(tmp_path, caplog) -> None:
+    """The warning has to stay rare enough to mean something."""
+    path = Pix2PixTrainer("pixelation", device="cpu", n_epochs=50, n_epochs_decay=50).save(tmp_path / "p.pt")
+
+    with caplog.at_level("WARNING"):
+        Pix2PixTrainer.resume("pixelation", path, device="cpu", n_epochs=50, n_epochs_decay=50)
+
+    assert "schedule" not in caplog.text

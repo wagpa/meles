@@ -450,6 +450,21 @@ class Pix2PixTrainer:
             self.discriminator_optimizer.load_state_dict(state.discriminator_optimizer)
 
         self.epoch = state.epoch
+
+        # The checkpoint's schedule wins, because resuming a run half-way down its learning-rate
+        # ramp has to continue that ramp, not restart it. But it silently overrides what the
+        # caller asked for, which is exactly what happens when a config is edited and the stale
+        # checkpoint is left in place -- so say so rather than quietly training to the old plan.
+        if state.schedule != (self.n_epochs, self.n_epochs_decay):
+            logger.warning(
+                "Checkpoint schedule overrides the configured one",
+                extra={
+                    "configured": (self.n_epochs, self.n_epochs_decay),
+                    "checkpoint": state.schedule,
+                    "epoch": state.epoch,
+                    "remedy": f"delete {path or checkpoint_path(self.anonymizer)} to start over at the configured one",
+                },
+            )
         self.n_epochs, self.n_epochs_decay = state.schedule
         # Defaulted rather than replaced, so that a checkpoint missing a key (an inference-only
         # export, say) does not leave 'fit' appending to a dict without that list in it. A key

@@ -60,7 +60,7 @@ stronger attacker model, not a weaker one, but it is not what SEBA measures.
 - `src/meles/training/pix2pix.py` — `Pix2PixTrainer`: model, optimisers, the linear
   learning-rate schedule, loss history, and `save`/`load`/`resume`.
 - `src/tests/test_pix2pix_upstream.py` — pins the architecture and hyperparameters to upstream.
-- `src/notebooks/08_train_pix2pix.ipynb` — the run.
+- `src/notebooks/08_train_pix2pix.ipynb` — the run; `Pix2PixTraining.md` is how to configure it.
 
 ## The training images
 
