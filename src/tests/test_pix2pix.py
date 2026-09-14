@@ -14,7 +14,9 @@ smallest a BatchNorm at 1x1 tolerates.
 """
 
 import pickle
+import random
 import zipfile
+from dataclasses import astuple
 
 import numpy as np
 import pytest
@@ -22,16 +24,18 @@ import torch
 
 from meles.anonymization import ANONYMIZERS
 from meles.frame_aggregation.pix2pix import (
+    LOAD_SIZE,
     SIZE,
     Pix2Pix,
-    Pix2PixDiscriminator,
-    Pix2PixGenerator,
+    UnetGenerator,
     load_checkpoint,
     load_generator,
+    save_checkpoint,
     to_image,
     to_tensor,
 )
 from meles.training import AnonymizedPairs, ImageArchive, ImageDirectory, Pix2PixTrainer, split
+from meles.training.pairs import augment, augmentation_params
 
 
 class Faces:
@@ -81,23 +85,10 @@ def test_the_round_trip_keeps_the_colours(frame: np.ndarray) -> None:
     assert restored[:, :, 1:].max() < 5
 
 
-def test_the_discriminator_returns_logits() -> None:
-    """
-    Not probabilities. The losses apply the sigmoid themselves, so a Sigmoid in the network would
-    square it -- which does not fail, it just stops the model from learning.
-    """
-    with torch.no_grad():
-        verdict = Pix2PixDiscriminator()(torch.randn(2, 3, SIZE, SIZE), torch.randn(2, 3, SIZE, SIZE))
-
-    # 30x30 patches at 256x256, the receptive field the paper calls 70x70.
-    assert verdict.shape == (2, 1, 30, 30)
-    assert float(verdict.min()) < 0.0 < float(verdict.max()), "a sigmoid would have clamped these into (0, 1)"
-
-
 def test_the_generator_returns_a_frame_shaped_tensor() -> None:
     """The skips only line up if every encoder level matches its decoder level."""
     with torch.no_grad():
-        generated = Pix2PixGenerator()(torch.randn(2, 3, SIZE, SIZE))
+        generated = UnetGenerator()(torch.randn(2, 3, SIZE, SIZE))
 
     assert generated.shape == (2, 3, SIZE, SIZE)
     # The final Tanh has to match the range 'to_tensor' puts the targets in.
@@ -110,14 +101,14 @@ def test_the_generator_survives_a_batch_of_one() -> None:
     and raises on a batch of one. Inference with a single frame has to work regardless.
     """
     with torch.no_grad():
-        assert Pix2PixGenerator()(torch.randn(1, 3, SIZE, SIZE)).shape == (1, 3, SIZE, SIZE)
+        assert UnetGenerator()(torch.randn(1, 3, SIZE, SIZE)).shape == (1, 3, SIZE, SIZE)
 
 
 def test_deanonymize_returns_one_frame_per_input_at_its_own_size() -> None:
     """The inference entry point has to behave like the other frame-wise de-anonymizations."""
     frames = [np.random.default_rng(seed).integers(0, 256, (60 + seed, 50, 3), dtype=np.uint8) for seed in range(3)]
 
-    restored = Pix2PixGenerator().deanonymize(frames)
+    restored = UnetGenerator().deanonymize(frames)
 
     assert len(restored) == len(frames)
     for before, after in zip(frames, restored):
@@ -131,7 +122,7 @@ def test_the_pairs_anonymize_the_clear_image(method: str) -> None:
     The input half of a pair is the target with the selected anonymization applied. If the two
     came out equal the L1 term would be trained to copy, so a differing pair is the whole point.
     """
-    pairs = AnonymizedPairs(Faces(), method)
+    pairs = AnonymizedPairs(Faces(), method, load_size=None)
 
     anonymized, clear = pairs[0]
 
@@ -141,7 +132,7 @@ def test_the_pairs_anonymize_the_clear_image(method: str) -> None:
 
 def test_the_baseline_pairs_are_identical() -> None:
     """'none' has nothing to undo, which is what makes it the baseline rather than a bug."""
-    anonymized, clear = AnonymizedPairs(Faces(), "none")[0]
+    anonymized, clear = AnonymizedPairs(Faces(), "none", load_size=None)[0]
 
     assert torch.equal(anonymized, clear)
 
@@ -151,7 +142,7 @@ def test_an_undetected_face_still_makes_a_usable_pair() -> None:
     'anonymize_frame' leaves an undetected frame untouched; doing that here would emit a pair whose
     input equals its target. The whole image is anonymized instead, and the miss is counted.
     """
-    pairs = AnonymizedPairs(Faces(), "blackbar", on_missing="whole_image")
+    pairs = AnonymizedPairs(Faces(), "blackbar", on_missing="whole_image", load_size=None)
 
     anonymized, clear = pairs[0]
 
@@ -164,8 +155,8 @@ def test_an_undetected_face_still_makes_a_usable_pair() -> None:
 
 def test_detecting_up_front_agrees_with_detecting_per_item() -> None:
     """Pre-detection is an optimisation; it must not change which region gets anonymized."""
-    lazy = AnonymizedPairs(Faces(), "pixelation")
-    eager = AnonymizedPairs(Faces(), "pixelation")
+    lazy = AnonymizedPairs(Faces(), "pixelation", load_size=None)
+    eager = AnonymizedPairs(Faces(), "pixelation", load_size=None)
     eager.detect(progress=False)
 
     assert eager.areas is not None
@@ -231,9 +222,11 @@ def test_a_training_step_moves_both_networks() -> None:
     trainer = Pix2PixTrainer("pixelation", model=Pix2Pix(), device="cpu")
     before = {name: tensor.clone() for name, tensor in trainer.model.state_dict().items()}
 
-    generator_loss, discriminator_loss = trainer.step(torch.randn(2, 3, SIZE, SIZE), torch.randn(2, 3, SIZE, SIZE))
+    losses = trainer.step(torch.randn(2, 3, SIZE, SIZE), torch.randn(2, 3, SIZE, SIZE))
 
-    assert np.isfinite(generator_loss) and np.isfinite(discriminator_loss)
+    assert all(np.isfinite(value) for value in astuple(losses))
+    # The total is the weighted sum of the two terms, which is what makes it useless on its own.
+    assert losses.generator == pytest.approx(losses.adversarial + trainer.lambda_l1 * losses.l1, rel=1e-5)
     after = trainer.model.state_dict()
     assert any(not torch.equal(before[name], after[name]) for name in before if name.startswith("generator."))
     assert any(not torch.equal(before[name], after[name]) for name in before if name.startswith("discriminator."))
@@ -318,10 +311,143 @@ def test_the_split_is_disjoint_and_reproducible() -> None:
 
 def test_detecting_on_threads_agrees_with_detecting_on_one() -> None:
     """Parallelism is an optimisation; it must not reorder the areas it returns."""
-    pairs = AnonymizedPairs(Faces(count=6), "pixelation")
+    pairs = AnonymizedPairs(Faces(count=6), "pixelation", load_size=None)
 
-    serial = list(AnonymizedPairs(Faces(count=6), "pixelation").detect(progress=False, workers=1))
+    serial = list(AnonymizedPairs(Faces(count=6), "pixelation", load_size=None).detect(progress=False, workers=1))
     threaded = pairs.detect(progress=False, workers=4)
 
     assert len(threaded) == 6
     assert [area is None for area in threaded] == [area is None for area in serial]
+
+
+def test_validation_does_not_move_the_batchnorm_statistics() -> None:
+    """
+    BatchNorm updates its running statistics inside the forward pass whenever it is in 'train'
+    mode, and 'no_grad' does not stop it. A run that validated in train mode would spend every
+    epoch fitting its normalisation to held-out data -- silently, and only visible later through
+    'eval'.
+    """
+    trainer = Pix2PixTrainer("pixelation", device="cpu")
+    trainer.model.train()
+    before = {
+        name: buffer.clone()
+        for name, buffer in trainer.model.named_buffers()
+        if name.endswith(("running_mean", "running_var"))
+    }
+    assert before, "the model should have BatchNorm buffers to begin with"
+
+    batch = [(torch.randn(2, 3, SIZE, SIZE) * 4 + 2, torch.randn(2, 3, SIZE, SIZE))]
+    trainer.evaluate(batch)
+
+    after = dict(trainer.model.named_buffers())
+    assert all(torch.equal(before[name], after[name]) for name in before)
+    # And the mode is handed back as it was found, so 'fit' keeps training after validating.
+    assert trainer.model.training
+
+
+def test_evaluating_reports_the_generator_terms_apart() -> None:
+    """The total conflates reconstruction with how far ahead the discriminator is."""
+    trainer = Pix2PixTrainer("pixelation", device="cpu")
+
+    losses = trainer.evaluate([(torch.randn(2, 3, SIZE, SIZE), torch.randn(2, 3, SIZE, SIZE))])
+
+    assert losses.l1 > 0.0
+    assert losses.generator == pytest.approx(losses.adversarial + trainer.lambda_l1 * losses.l1, rel=1e-5)
+
+
+def test_an_empty_loader_evaluates_to_nan() -> None:
+    """Better than 0.0, which would plot as a perfect epoch."""
+    assert all(np.isnan(value) for value in astuple(Pix2PixTrainer("none", device="cpu").evaluate([])))
+
+
+def test_resuming_a_checkpoint_without_the_newer_series_pads_it(tmp_path) -> None:
+    """
+    A checkpoint written before 'adv'/'l1' were recorded still has to resume, and its history has
+    to stay index-alignable -- otherwise a plot of the resumed run shifts one curve against the
+    rest without saying so.
+    """
+    trainer = Pix2PixTrainer("pixelation", device="cpu")
+    trainer.epoch = 3
+    state = trainer.state()
+    state.history = {"train_g": [1.0, 2.0, 3.0], "train_d": [0.5, 0.4, 0.3], "val_g": [], "val_d": []}
+    path = save_checkpoint(state, tmp_path / "old.pt")
+
+    loaded = Pix2PixTrainer("pixelation", device="cpu").load(path)
+
+    assert loaded.history["train_g"] == [1.0, 2.0, 3.0]
+    assert len(loaded.history["train_l1"]) == 3
+    assert all(np.isnan(value) for value in loaded.history["train_l1"])
+
+
+def test_the_pair_is_cropped_and_flipped_together() -> None:
+    """
+    pix2pix's whole augmentation is a random 256 crop out of a 286 resize plus a random mirror,
+    and both ends of a pair must get the *same* draw. Cropped independently the pair is no longer
+    pixel-aligned, and the L1 term would be asking the generator to reconstruct a shifted face --
+    which does not fail, it just trains a blur.
+    """
+    # 'none' leaves the image alone, so the two ends of the pair start out identical and can only
+    # still be identical afterwards if they were cropped and mirrored together. Independent draws
+    # would show up here as a shifted or mirrored copy, which is exactly the failure being ruled
+    # out -- and one that trains a blur rather than raising.
+    pairs = AnonymizedPairs(Faces(count=1), "none", load_size=LOAD_SIZE)
+
+    random.seed(0)
+    anonymized, clear = pairs[0]
+
+    assert anonymized.shape == clear.shape == (3, SIZE, SIZE)
+    assert torch.equal(anonymized, clear)
+
+    # And the draw has to actually vary, or it is not an augmentation.
+    varied = set()
+    for seed in range(8):
+        random.seed(seed)
+        varied.add(pairs[0][1].numpy().tobytes())
+    assert len(varied) > 1
+
+
+def test_turning_the_augmentation_off_is_deterministic() -> None:
+    """What a validation split wants: a loss that is comparable between epochs."""
+    pairs = AnonymizedPairs(Faces(count=1), "pixelation", load_size=None)
+
+    random.seed(0)
+    first = pairs[0]
+    random.seed(1)
+    second = pairs[0]
+
+    assert torch.equal(first[0], second[0]) and torch.equal(first[1], second[1])
+
+
+def test_the_augmentation_draws_a_crop_inside_the_resized_image() -> None:
+    """An out-of-range corner would slice a short array and yield a wrongly shaped tensor."""
+    for seed in range(20):
+        random.seed(seed)
+        (x, y), _ = augmentation_params(LOAD_SIZE, SIZE)
+        assert 0 <= x <= LOAD_SIZE - SIZE and 0 <= y <= LOAD_SIZE - SIZE
+
+
+def test_the_augmentation_mirrors() -> None:
+    """The flip has to actually flip, and only when asked."""
+    image = np.zeros((64, 64, 3), np.uint8)
+    image[:, :10] = 255
+
+    kept = augment(image, (0, 0), False, 64, 64)
+    mirrored = augment(image, (0, 0), True, 64, 64)
+
+    assert np.array_equal(kept, image)
+    assert np.array_equal(mirrored, image[:, ::-1])
+
+
+def test_the_checkpoint_carries_the_schedule(tmp_path) -> None:
+    """
+    A resumed run has to pick the learning rate ramp back up where it left it. Losing the schedule
+    would silently restart the decay, which is a different model than the one being described.
+    """
+    trainer = Pix2PixTrainer("pixelation", device="cpu", n_epochs=7, n_epochs_decay=3)
+    trainer.epoch = 8
+
+    path = trainer.save(tmp_path / "pixelation.pt")
+    resumed = Pix2PixTrainer.resume("pixelation", path, device="cpu")
+
+    assert (resumed.n_epochs, resumed.n_epochs_decay) == (7, 3)
+    assert resumed.learning_rate_at(9) == trainer.learning_rate_at(9)

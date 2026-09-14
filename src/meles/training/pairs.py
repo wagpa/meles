@@ -18,6 +18,7 @@ the generator's prior contain the gallery, which is the same trap the fold split
 
 import logging
 import os
+import random
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Literal
@@ -30,13 +31,65 @@ from torch.utils.data import Dataset
 from meles.anonymization import Anonymizer, resolve
 from meles.common import FacialArea, Image
 from meles.detection import Detector, default_detector
-from meles.frame_aggregation.pix2pix import SIZE, to_tensor
+from meles.frame_aggregation.pix2pix import LOAD_SIZE, SIZE, to_tensor
 from meles.training.sources import ImageSource
 
 logger = logging.getLogger(__name__)
 
 # What to do with an image the detector finds no face in.
 OnMissing = Literal["whole_image", "clear"]
+
+
+def augment(image: Image, crop: tuple[int, int], flip: bool, load_size: int, crop_size: int) -> Image:
+    """
+    pix2pix's ``resize_and_crop`` preprocessing, for one image of a pair.
+
+    Upstream resizes to a **square** ``load_size`` -- aspect ratio is not preserved, so a 178x218
+    CelebA image is squashed to 286x286 -- then takes a ``crop_size`` crop and optionally mirrors
+    it. The crop and the flip are where pix2pix's only augmentation comes from.
+
+    ``crop`` and ``flip`` are passed in rather than drawn here because both images of a pair must
+    get the *same* ones; a pair cropped differently at each end is no longer aligned, and the L1
+    term would be asking the generator to reconstruct a shifted face.
+
+    :param image: The frame, BGR uint8
+    :param crop: The (x, y) top-left corner of the crop, in the resized image
+    :param flip: Whether to mirror horizontally
+    :param load_size: The square edge to resize to before cropping
+    :param crop_size: The square edge of the crop
+    :return: The augmented frame, BGR uint8, ``crop_size`` square
+    """
+    # INTER_CUBIC to match upstream's PIL BICUBIC. The two kernels are not bit-identical -- PIL
+    # antialiases on downscale where OpenCV does not -- but this is a training augmentation, and
+    # the policy is what matters, not the last bit of the resample.
+    resized = cv2.resize(image, (load_size, load_size), interpolation=cv2.INTER_CUBIC)
+    x, y = crop
+    cropped = resized[y : y + crop_size, x : x + crop_size]
+    if flip:
+        cropped = cropped[:, ::-1]
+    # 'ascontiguousarray' because a reversed slice is a negative-stride view, which torch refuses.
+    # The 'astype' is a no-op and is here only because OpenCV's stubs cannot express "same dtype
+    # as the input", the same reason 'resample.py' carries one.
+    return np.ascontiguousarray(cropped).astype(np.uint8, copy=False)
+
+
+def augmentation_params(
+    load_size: int = LOAD_SIZE, crop_size: int = SIZE, flip: bool = True
+) -> tuple[tuple[int, int], bool]:
+    """
+    Draw one image pair's crop position and flip, i.e. upstream's ``get_params``.
+
+    Drawn from the ``random`` module, as upstream does, which is also the one a ``DataLoader``
+    reseeds per worker -- so the augmentation differs between workers instead of every worker
+    replaying the same stream.
+
+    :param load_size: The square edge the image is resized to
+    :param crop_size: The square edge of the crop
+    :param flip: Whether mirroring is enabled at all
+    :return: The (x, y) crop corner and whether to mirror
+    """
+    span = max(0, load_size - crop_size)
+    return (random.randint(0, span), random.randint(0, span)), flip and random.random() > 0.5
 
 
 def as_image(item: Any) -> Image:
@@ -82,6 +135,8 @@ class AnonymizedPairs(Dataset):
         size: int = SIZE,
         on_missing: OnMissing = "whole_image",
         areas: Sequence[FacialArea | None] | None = None,
+        load_size: int | None = LOAD_SIZE,
+        flip: bool = True,
     ):
         """
         :param source: The clear images, e.g. an ``meles.training.sources.ImageArchive`` over the
@@ -93,7 +148,7 @@ class AnonymizedPairs(Dataset):
         :param detector: The detector that locates the face to anonymize. The pipeline's shared
             YuNet by default, so that the model is trained against exactly the region the
             pipeline will anonymize at inference time
-        :param size: The square edge length both frames are resized to
+        :param size: The square edge length both frames are resized to, upstream's ``crop_size``
         :param on_missing: What to do when no face is detected. ``"whole_image"`` anonymizes the
             whole image; ``"clear"`` leaves it untouched, which is what ``anonymize_frame`` does
             to a frame but makes a *degenerate training pair* -- input equals target, teaching
@@ -101,6 +156,12 @@ class AnonymizedPairs(Dataset):
         :param areas: Pre-detected facial areas, one per source item, as returned by
             :meth:`detect`. Passing them (or calling :meth:`detect` before the ``DataLoader`` is
             built) pays for detection once instead of once per epoch
+        :param load_size: Upstream's ``load_size``: resize to this square edge and take a random
+            ``size`` crop, which with the mirroring below is pix2pix's whole augmentation. None
+            turns it off and resizes straight to ``size``, which is what a *validation* split
+            wants -- a loss measured under a fresh random crop each epoch is not comparable
+            between epochs
+        :param flip: Whether to mirror horizontally at random, upstream's ``--no_flip`` inverted
         """
         self.source = source
         self.anonymizer = resolve(anonymizer) if isinstance(anonymizer, str) else anonymizer
@@ -109,6 +170,8 @@ class AnonymizedPairs(Dataset):
         self.size = size
         self.on_missing = on_missing
         self.areas: list[FacialArea | None] | None = list(areas) if areas is not None else None
+        self.load_size = load_size
+        self.flip = flip
 
         # Counted rather than logged per image; a line per image is 160k lines on CelebA. Note
         # that with 'num_workers > 0' each worker counts only what it saw, so this is a hint
@@ -216,4 +279,12 @@ class AnonymizedPairs(Dataset):
         """
         clear = self.image(index)
         anonymized = self.anonymize(clear, index)
+
+        # One draw for the pair, applied to both. Cropping or mirroring the two ends
+        # independently would break the pixel alignment the L1 term depends on.
+        if self.load_size is not None:
+            crop, flip = augmentation_params(self.load_size, self.size, self.flip)
+            clear = augment(clear, crop, flip, self.load_size, self.size)
+            anonymized = augment(anonymized, crop, flip, self.load_size, self.size)
+
         return to_tensor(anonymized, self.size), to_tensor(clear, self.size)

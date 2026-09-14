@@ -1,22 +1,38 @@
 """
-pix2pix (Isola et al., CVPR 2017) as a learned de-anonymization.
+pix2pix (Isola et al., CVPR 2017) as a learned de-anonymization, as SEBA runs it.
 
-The frame-wise de-anonymizations in ``resample.py`` are fixed functions: they smooth what the
-anonymization left behind and recover nothing that is not still in the pixels. A conditional GAN
-is the other kind of attack -- it learns a prior over faces and *hallucinates* the detail back.
-What it hallucinates is not the subject's face, which is exactly why the experiment measures
-whether a recognizer still matches it to the right identity.
+SEBA (kit-ps/seba, the Fantomas paper) does not implement pix2pix. It clones
+``junyanz/pytorch-CycleGAN-and-pix2pix`` and shells out to it
+(``src/deanonymization/face/pix2pix.py``), so "the model SEBA uses" means that repository's
+``--model pix2pix`` defaults, invoked as::
 
-One model is trained per anonymization method (see ``FrameModel.md``), because a generator that
-undoes 8x8 pixelation has learnt a different inverse than one that undoes a Gaussian blur. The
-method the model was trained against is therefore part of the checkpoint (``Pix2PixCheckpoint``),
-not something the caller is trusted to remember.
+    train.py --model pix2pix --direction BtoA --n_epochs E/2 --n_epochs_decay E/2
+    test.py  --model test --netG unet_256 --norm batch --direction BtoA
 
-This module holds the networks, the losses and the checkpoint format. The training loop and the
-paired dataset that feeds it live in ``meles.training.pix2pix`` and ``meles.training.pairs``.
+``--model pix2pix`` sets ``netG=unet_256``, ``norm=batch`` and ``gan_mode=vanilla``; everything
+else is a base default. ``BtoA`` is what makes it a de-anonymization rather than an
+anonymization: SEBA puts the clear images in ``A`` and the anonymized ones in ``B``, so B is the
+input and A is the target.
+
+The networks below are a **port, not a reimplementation**. The module nesting and therefore the
+``state_dict`` keys match upstream exactly, which is checked by
+``src/tests/test_pix2pix_upstream.py``. That is deliberate: a published
+``latest_net_G.pth`` from anyone running that repository -- SEBA's, had they released it --
+loads into :class:`UnetGenerator` through :func:`import_upstream_generator` with no conversion.
+
+What this file does **not** copy is the surrounding harness. The dataset side of upstream is a
+directory of side-by-side AB images produced by ``combine_A_and_B.py``; here the pairs are made
+in memory by applying one of ``meles.anonymization.ANONYMIZERS`` to a clear image, which is the
+point of the exercise -- SEBA's anonymizers are not this project's.
+
+One model is trained per anonymization method, because a generator that undoes 8x8 pixelation has
+learnt a different inverse than one that undoes a Gaussian blur. The method is recorded in the
+checkpoint (:class:`Pix2PixCheckpoint`) rather than left to the caller to remember.
 """
 
+import functools
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -30,49 +46,77 @@ from meles.common import Image
 
 logger = logging.getLogger(__name__)
 
-# The resolution the U-Net works at. The encoder halves the spatial size eight times, so the
-# input edge has to be a multiple of 256 for the innermost feature map to come out at 1x1 --
-# 256 is the smallest such size and the one the paper trains at.
+# 'crop_size', the resolution the networks actually see. The U-Net halves the spatial size eight
+# times, so the edge has to be a multiple of 256 for the innermost feature map to reach 1x1.
 SIZE = 256
+
+# 'load_size'. Upstream's default preprocessing is 'resize_and_crop': scale to 286 and take a
+# random 256 crop, which is where pix2pix's translation augmentation comes from.
+LOAD_SIZE = 286
+
+# 'ngf' / 'ndf', the filter counts, and 'n_layers_D'. Upstream base defaults.
+NGF = 64
+NDF = 64
+N_LAYERS_D = 3
+
+# 'lambda_L1', the weight of the generator's reconstruction term against its adversarial one.
+LAMBDA_L1 = 100.0
+
+# 'lr' and 'beta1'. beta1 is 0.5 rather than Adam's usual 0.9 because a GAN's loss surface moves
+# under the optimiser, so heavy momentum chases a direction the other network has invalidated.
+LEARNING_RATE = 2e-4
+BETAS = (0.5, 0.999)
+
+# 'n_epochs' and 'n_epochs_decay': the learning rate is held for the first and decayed linearly
+# towards zero across the second. SEBA passes 'epochs // 2' for both.
+N_EPOCHS = 100
+N_EPOCHS_DECAY = 100
+
+# 'batch_size'. Upstream's default, and unusual enough to be worth stating: pix2pix trains on
+# single images. It is not an arbitrary choice -- with batch norm, a batch of one makes the
+# normalisation per-image, which is most of the way to the instance norm the paper discusses.
+BATCH_SIZE = 1
+
+# 'init_gain', the standard deviation of the normal initialisation.
+INIT_GAIN = 0.02
 
 # The version of the checkpoint payload below. Stored in the file so that a checkpoint written
 # by an older layout fails loudly instead of loading into mismatched state dicts.
-CHECKPOINT_FORMAT = 1
+CHECKPOINT_FORMAT = 2
 
 
 def _interpolation(source: tuple[int, int], target: tuple[int, int]) -> int:
     """
     The resampling kernel to resize with.
 
-    ``INTER_AREA`` averages the pixels falling into each output pixel, which is the right thing
-    when shrinking and degenerates to something close to nearest-neighbour when growing -- and
-    the frames go both ways here, since CelebA is 178x218 (up to 256) while a YouTube Faces frame
-    may be larger (down to 256).
+    ``INTER_AREA`` averages the pixels falling into each output pixel, which is right when
+    shrinking and degenerates to something close to nearest-neighbour when growing.
 
     :param source: The (height, width) being resized from
     :param target: The (height, width) being resized to
     :return: The ``cv2`` interpolation flag
     """
     shrinking = target[0] * target[1] < source[0] * source[1]
-    return cv2.INTER_AREA if shrinking else cv2.INTER_LINEAR
+    return cv2.INTER_AREA if shrinking else cv2.INTER_CUBIC
 
 
 def to_tensor(image: Image, size: int = SIZE) -> Tensor:
     """
-    A frame as the tensor the networks take.
+    A frame as the tensor the networks take, i.e. upstream's ``ToTensor`` + ``Normalize(0.5, 0.5)``.
 
     Three conversions happen here and all three are easy to get silently wrong, so they are in
-    one place rather than left to each caller: meles speaks OpenCV's **BGR** everywhere
-    (``meles.common.Image`` is what ``cv2.imread`` returns) while the networks are trained on
-    RGB; the layout goes from HWC to CHW; and the generator ends on a ``Tanh``, so the value
-    range has to be **[-1, 1]** rather than [0, 1].
+    one place: meles speaks OpenCV's **BGR** everywhere (``meles.common.Image`` is what
+    ``cv2.imread`` returns) while the networks are trained on RGB; the layout goes from HWC to
+    CHW; and the generator ends on a ``Tanh``, so the range is **[-1, 1]**, not [0, 1].
 
     :param image: The frame, BGR uint8 as everywhere else in meles
     :param size: The square edge length to resize to
     :return: A ``(3, size, size)`` float32 tensor in [-1, 1], RGB
     """
     height, width = image.shape[:2]
-    resized = cv2.resize(image, (size, size), interpolation=_interpolation((height, width), (size, size)))
+    resized = image
+    if (height, width) != (size, size):
+        resized = cv2.resize(image, (size, size), interpolation=_interpolation((height, width), (size, size)))
     rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
     tensor = torch.from_numpy(np.ascontiguousarray(rgb)).permute(2, 0, 1).float()
     return tensor / 127.5 - 1.0
@@ -80,11 +124,11 @@ def to_tensor(image: Image, size: int = SIZE) -> Tensor:
 
 def to_image(tensor: Tensor, size: tuple[int, int] | None = None) -> Image:
     """
-    The inverse of :func:`to_tensor`.
+    The inverse of :func:`to_tensor`, i.e. upstream's ``tensor2im``.
 
     Values are clamped before they are scaled back: the generator's ``Tanh`` cannot leave [-1, 1]
-    but a target tensor that has been through an augmentation can, and ``uint8`` would wrap it
-    around into the opposite brightness rather than saturate.
+    but an augmented target tensor can, and ``uint8`` would wrap it around into the opposite
+    brightness rather than saturate.
 
     :param tensor: A ``(3, H, W)`` tensor in [-1, 1], RGB, on any device
     :param size: The (height, width) to resize back to, or None to keep the tensor's own size
@@ -97,207 +141,194 @@ def to_image(tensor: Tensor, size: tuple[int, int] | None = None) -> Image:
     return cv2.resize(bgr, (size[1], size[0]), interpolation=_interpolation(bgr.shape[:2], size))
 
 
-def init_weights(module: nn.Module) -> None:
+def init_weights(net: nn.Module, init_gain: float = INIT_GAIN) -> None:
     """
-    The paper's initialisation: every convolution drawn from ``N(0, 0.02)``.
+    Upstream's ``init_weights(net, 'normal', 0.02)``.
 
     Not cosmetic. A GAN at PyTorch's default (Kaiming-uniform) initialisation starts with a
-    discriminator that is already confident, which is the usual reason pix2pix training collapses
-    in the first epoch. Apply with ``model.apply(init_weights)``.
+    discriminator that is already confident, which is the usual reason pix2pix collapses in the
+    first epoch.
 
-    :param module: The module to initialise, called once per submodule by ``nn.Module.apply``
-    """
-    if isinstance(module, nn.Conv2d | nn.ConvTranspose2d):
-        nn.init.normal_(module.weight, 0.0, 0.02)
-        if module.bias is not None:
-            nn.init.constant_(module.bias, 0.0)
-    elif isinstance(module, nn.BatchNorm2d):
-        nn.init.normal_(module.weight, 1.0, 0.02)
-        nn.init.constant_(module.bias, 0.0)
+    Matched to upstream down to which modules it touches: it keys off the *class name* containing
+    "Conv", so ``Conv2d`` and ``ConvTranspose2d`` are both caught, and treats BatchNorm
+    separately because a normalisation weight is a scale around one, not a matrix around zero.
 
-
-class Pix2PixDiscriminator(nn.Module):
-    """
-    The 70x70 PatchGAN.
-
-    It judges overlapping 70x70 patches rather than the whole image, which is what keeps the
-    generator from settling on a plausible *average* face: a blurred output fails the patch test
-    everywhere even when it is globally about right.
-
-    **It returns logits, not probabilities.** The losses in :class:`Pix2Pix` are
-    ``BCEWithLogitsLoss``, which applies the sigmoid itself in a numerically stable way; ending
-    this network on a ``Sigmoid`` as well would square it, flatten the gradient at both ends and
-    leave training stuck near the point where the discriminator is already right.
+    :param net: The network to initialise, in place
+    :param init_gain: The standard deviation of the normal draw
     """
 
-    def __init__(self, in_channels: int = 3):
+    def initialise(module: nn.Module) -> None:
+        name = module.__class__.__name__
+        # 'nn.Module.__getattr__' widens every attribute to include submodules, so the tensors are
+        # narrowed explicitly rather than reached through 'module.weight.data' as upstream does.
+        weight = getattr(module, "weight", None)
+        bias = getattr(module, "bias", None)
+
+        if isinstance(weight, Tensor) and ("Conv" in name or "Linear" in name):
+            nn.init.normal_(weight.data, 0.0, init_gain)
+        elif isinstance(weight, Tensor) and "BatchNorm2d" in name:
+            nn.init.normal_(weight.data, 1.0, init_gain)
+        else:
+            return
+
+        if isinstance(bias, Tensor):
+            nn.init.constant_(bias.data, 0.0)
+
+    net.apply(initialise)
+
+
+class UnetSkipConnectionBlock(nn.Module):
+    """
+    One level of the U-Net, holding the level below it. Upstream's ``UnetSkipConnectionBlock``.
+
+    The recursion is what makes the skips work out: a block downsamples, hands the result to its
+    submodule, upsamples what comes back, and concatenates its own input onto it. So every level's
+    input reaches its output without passing through the bottleneck.
+
+    Two things about the layer order are load-bearing and look like mistakes if you expect the
+    usual ``conv -> norm -> activation``. The activation comes **before** the convolution here,
+    which is what lets the outermost block start with a bare convolution and the outermost
+    upsample end on ``Tanh`` with no normalisation in between. And the innermost block's
+    downsample has **no normalisation**: its feature map is 1x1, where a BatchNorm has one spatial
+    sample per channel and, on a batch of one, raises outright.
+    """
+
+    def __init__(
+        self,
+        outer_nc: int,
+        inner_nc: int,
+        input_nc: int | None = None,
+        submodule: "UnetSkipConnectionBlock | None" = None,
+        outermost: bool = False,
+        innermost: bool = False,
+        norm_layer: Callable[[int], nn.Module] = nn.BatchNorm2d,
+        use_dropout: bool = False,
+    ):
         """
-        :param in_channels: The channels of one image; the network sees twice that, because the
-            condition (the anonymized frame) and the image being judged are concatenated
+        :param outer_nc: The channels this block produces before its skip is concatenated
+        :param inner_nc: The channels its downsample produces, i.e. what the level below sees
+        :param input_nc: The channels arriving, defaulting to ``outer_nc``
+        :param submodule: The level below, or None for the innermost
+        :param outermost: Whether this is the level that takes the image and emits the image
+        :param innermost: Whether this is the 1x1 bottleneck
+        :param norm_layer: The normalisation to use, ``BatchNorm2d`` for pix2pix
+        :param use_dropout: Whether to drop half the upsampled activations. pix2pix has no noise
+            input, so this is its only stochasticity, and it stays on at test time
         """
         super().__init__()
+        self.outermost = outermost
 
-        def conv_block(in_c: int, out_c: int, stride: int) -> nn.Sequential:
-            return nn.Sequential(
-                # The bias is redundant in front of a BatchNorm, which subtracts the mean again.
-                nn.Conv2d(in_c, out_c, kernel_size=4, stride=stride, padding=1, bias=False),
-                nn.BatchNorm2d(out_c),
-                nn.LeakyReLU(0.2, inplace=True),
-            )
+        # Upstream decides this by asking whether the norm is InstanceNorm; with BatchNorm the
+        # bias is redundant, because the normalisation subtracts the mean straight back off.
+        use_bias = isinstance(norm_layer, functools.partial) and norm_layer.func is nn.InstanceNorm2d
 
-        self.model = nn.Sequential(
-            nn.Conv2d(in_channels * 2, 64, kernel_size=4, stride=2, padding=1),  # C64, no BatchNorm
-            nn.LeakyReLU(0.2, inplace=True),
-            conv_block(64, 128, stride=2),  # C128
-            conv_block(128, 256, stride=2),  # C256
-            conv_block(256, 512, stride=1),  # C512, stride 1 -- this is what makes the patch 70x70
-            nn.Conv2d(512, 1, kernel_size=4, stride=1, padding=1),  # one logit per patch
-        )
-        self.apply(init_weights)
+        if input_nc is None:
+            input_nc = outer_nc
 
-    def forward(self, condition: Tensor, image: Tensor) -> Tensor:
-        """
-        :param condition: The anonymized frames, ``(N, C, H, W)``
-        :param image: The frames being judged -- real targets or generator output -- same shape
-        :return: One logit per patch, ``(N, 1, H/8 - 2, W/8 - 2)``; 30x30 at 256x256
-        """
-        return self.model(torch.cat([condition, image], dim=1))
+        downconv = nn.Conv2d(input_nc, inner_nc, kernel_size=4, stride=2, padding=1, bias=use_bias)
+        downrelu = nn.LeakyReLU(0.2, True)
+        downnorm = norm_layer(inner_nc)
+        uprelu = nn.ReLU(True)
+        upnorm = norm_layer(outer_nc)
 
+        model: list[nn.Module]
+        if innermost:
+            upconv = nn.ConvTranspose2d(inner_nc, outer_nc, kernel_size=4, stride=2, padding=1, bias=use_bias)
+            model = [downrelu, downconv, uprelu, upconv, upnorm]
+        elif submodule is None:
+            # Only the innermost block has nothing below it. Upstream lets this through and fails
+            # inside nn.Sequential with a much less obvious message.
+            raise ValueError("Only the innermost UnetSkipConnectionBlock may have no submodule")
+        elif outermost:
+            # Takes 'inner_nc * 2' because the submodule concatenated its own input onto its output.
+            upconv = nn.ConvTranspose2d(inner_nc * 2, outer_nc, kernel_size=4, stride=2, padding=1)
+            model = [downconv, submodule, uprelu, upconv, nn.Tanh()]
+        else:
+            upconv = nn.ConvTranspose2d(inner_nc * 2, outer_nc, kernel_size=4, stride=2, padding=1, bias=use_bias)
+            model = [downrelu, downconv, downnorm, submodule, uprelu, upconv, upnorm]
+            if use_dropout:
+                model.append(nn.Dropout(0.5))
 
-class Pix2PixDownSample(nn.Module):
-    """One encoder block: halve the spatial size, double (or cap) the channels."""
-
-    def __init__(self, in_channels: int, out_channels: int, apply_batch_norm: bool = True):
-        """
-        :param in_channels: The incoming channels
-        :param out_channels: The outgoing channels
-        :param apply_batch_norm: Whether to normalise. Off for the first block (the paper leaves
-            C64 unnormalised) and off for the innermost one, where the feature map is 1x1 and a
-            BatchNorm would have a single spatial sample per channel to estimate from -- with a
-            batch of one it does not merely lose signal, it raises
-            "Expected more than 1 value per channel when training"
-        """
-        super().__init__()
-
-        layers: list[nn.Module] = [
-            nn.Conv2d(in_channels, out_channels, kernel_size=4, stride=2, padding=1, bias=not apply_batch_norm)
-        ]
-        if apply_batch_norm:
-            layers.append(nn.BatchNorm2d(out_channels))
-        layers.append(nn.LeakyReLU(0.2, inplace=True))
-
-        self.down = nn.Sequential(*layers)
+        self.model = nn.Sequential(*model)
 
     def forward(self, x: Tensor) -> Tensor:
-        return self.down(x)
+        if self.outermost:
+            return self.model(x)
+        # The input first and the block's output second, as upstream, so that a checkpoint's
+        # channel order means the same thing to the convolution above.
+        return torch.cat([x, self.model(x)], 1)
 
 
-class Pix2PixUpSample(nn.Module):
-    """One decoder block: double the spatial size, then concatenate the encoder's skip."""
-
-    def __init__(self, in_channels: int, out_channels: int, apply_dropout: bool = False):
-        """
-        :param in_channels: The incoming channels, i.e. the *concatenated* width the previous
-            block produced
-        :param out_channels: The channels this block produces before the skip is concatenated
-        :param apply_dropout: Whether to drop half the activations. In pix2pix this is the only
-            source of stochasticity -- there is no noise input -- so it stays on at inference
-            time as well, which is why :meth:`Pix2PixGenerator.deanonymize` does not call ``eval``
-        """
-        super().__init__()
-
-        layers: list[nn.Module] = [
-            nn.ConvTranspose2d(in_channels, out_channels, kernel_size=4, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-        ]
-        if apply_dropout:
-            layers.append(nn.Dropout(0.5))
-
-        self.up = nn.Sequential(*layers)
-
-    def forward(self, x: Tensor, skip: Tensor) -> Tensor:
-        return torch.cat([self.up(x), skip], dim=1)
-
-
-class Pix2PixGenerator(nn.Module):
+class UnetGenerator(nn.Module):
     """
-    The U-Net generator: eight encoder blocks down to 1x1, eight decoder blocks back to 256x256,
-    with a skip connection across every level.
+    Upstream's ``unet_256`` generator: eight downsamples to 1x1 and eight back up, skipped at
+    every level.
 
     The skips are what make this a de-anonymization rather than a face generator. Everything the
     anonymization left intact -- pose, hair, background, lighting -- reaches the output without
-    having to survive the 1x1 bottleneck, so the network only has to invent the part that was
-    actually destroyed.
+    having to survive the bottleneck, so the network only has to invent what was destroyed.
+
+    Built innermost-first, exactly as upstream does, which is why the ``state_dict`` keys nest as
+    ``model.model.1.model.3....``: every level is a submodule of the one outside it.
     """
 
-    def __init__(self, in_channels: int = 3, out_channels: int = 3):
+    def __init__(
+        self,
+        input_nc: int = 3,
+        output_nc: int = 3,
+        num_downs: int = 8,
+        ngf: int = NGF,
+        norm_layer: Callable[[int], nn.Module] = nn.BatchNorm2d,
+        use_dropout: bool = True,
+    ):
+        """
+        :param input_nc: The channels of the anonymized frame
+        :param output_nc: The channels of the de-anonymized frame
+        :param num_downs: How many times to halve the spatial size; 8 is ``unet_256``
+        :param ngf: The filter count of the outermost level, doubling inwards up to ``ngf * 8``
+        :param norm_layer: The normalisation, ``BatchNorm2d`` for ``--norm batch``
+        :param use_dropout: Whether the three innermost ``ngf * 8`` levels drop out. Upstream's
+            ``--no_dropout`` defaults off, so pix2pix trains *with* dropout
+        """
         super().__init__()
 
-        # Encoder. 256 -> 128 -> 64 -> 32 -> 16 -> 8 -> 4 -> 2 -> 1
-        self.down1 = Pix2PixDownSample(in_channels, 64, apply_batch_norm=False)  # C64
-        self.down2 = Pix2PixDownSample(64, 128)  # C128
-        self.down3 = Pix2PixDownSample(128, 256)  # C256
-        self.down4 = Pix2PixDownSample(256, 512)  # C512
-        self.down5 = Pix2PixDownSample(512, 512)  # C512
-        self.down6 = Pix2PixDownSample(512, 512)  # C512
-        self.down7 = Pix2PixDownSample(512, 512)  # C512
-        self.down8 = Pix2PixDownSample(512, 512, apply_batch_norm=False)  # C512, 1x1: see the block
-
-        # Decoder. Each block's 'in_channels' is the previous block's output *after* its skip was
-        # concatenated, which is why they read 1024 rather than 512.
-        self.up1 = Pix2PixUpSample(512, 512, apply_dropout=True)  # CD512
-        self.up2 = Pix2PixUpSample(1024, 512, apply_dropout=True)  # CD1024
-        self.up3 = Pix2PixUpSample(1024, 512, apply_dropout=True)  # CD1024
-        self.up4 = Pix2PixUpSample(1024, 512)  # C1024
-        self.up5 = Pix2PixUpSample(1024, 256)  # C1024
-        self.up6 = Pix2PixUpSample(512, 128)  # C512
-        self.up7 = Pix2PixUpSample(256, 64)  # C256
-
-        self.final = nn.Sequential(
-            nn.ConvTranspose2d(128, out_channels, kernel_size=4, stride=2, padding=1),
-            # Matches the [-1, 1] range 'to_tensor' puts the targets in.
-            nn.Tanh(),
+        block = UnetSkipConnectionBlock(ngf * 8, ngf * 8, submodule=None, norm_layer=norm_layer, innermost=True)
+        # The levels that keep their width. These are the paper's CD512 blocks, and the only ones
+        # upstream applies dropout to.
+        for _ in range(num_downs - 5):
+            block = UnetSkipConnectionBlock(
+                ngf * 8, ngf * 8, submodule=block, norm_layer=norm_layer, use_dropout=use_dropout
+            )
+        block = UnetSkipConnectionBlock(ngf * 4, ngf * 8, submodule=block, norm_layer=norm_layer)
+        block = UnetSkipConnectionBlock(ngf * 2, ngf * 4, submodule=block, norm_layer=norm_layer)
+        block = UnetSkipConnectionBlock(ngf, ngf * 2, submodule=block, norm_layer=norm_layer)
+        self.model = UnetSkipConnectionBlock(
+            output_nc, ngf, input_nc=input_nc, submodule=block, outermost=True, norm_layer=norm_layer
         )
-        self.apply(init_weights)
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, input: Tensor) -> Tensor:
         """
-        :param x: The anonymized frames, ``(N, 3, 256, 256)`` in [-1, 1]
+        :param input: The anonymized frames, ``(N, 3, 256, 256)`` in [-1, 1]
         :return: The de-anonymized frames, the same shape and range
         """
-        d1 = self.down1(x)
-        d2 = self.down2(d1)
-        d3 = self.down3(d2)
-        d4 = self.down4(d3)
-        d5 = self.down5(d4)
-        d6 = self.down6(d5)
-        d7 = self.down7(d6)
-        d8 = self.down8(d7)
-
-        u1 = self.up1(d8, d7)
-        u2 = self.up2(u1, d6)
-        u3 = self.up3(u2, d5)
-        u4 = self.up4(u3, d4)
-        u5 = self.up5(u4, d3)
-        u6 = self.up6(u5, d2)
-        u7 = self.up7(u6, d1)
-
-        return self.final(u7)
+        return self.model(input)
 
     @torch.no_grad()
     def deanonymize(self, images: list[Image], size: int = SIZE) -> list[Image]:
         """
-        Run the generator over frames, returning frames.
+        Run the generator over frames, returning frames. The inference entry point.
 
         Each output is resized back to the size of the frame it came from, so this is a drop-in
         replacement for an anonymized frame anywhere downstream.
 
-        Note that the model is *not* switched to ``eval`` here, deliberately: pix2pix has no noise
-        input, so the decoder's dropout is its only stochasticity and the paper keeps it on at
-        test time. The BatchNorms are the awkward part of that -- they then normalise by the batch
-        rather than by running statistics, which makes a frame's output depend slightly on what it
-        was batched with. Call ``generator.eval()`` first if you need that determinism instead.
+        Two notes on fidelity to SEBA's ``test.py`` invocation. It passes no ``--eval``, so
+        upstream leaves the model in training mode at test time: dropout stays on (pix2pix's only
+        stochasticity) and the BatchNorms use batch rather than running statistics. This does the
+        same, by not switching modes -- call ``generator.eval()`` first if you want the
+        deterministic variant. It also passes no ``--preprocess``, so upstream takes a *random
+        256 crop of a 286 resize* at test time as well; that is not copied, because losing a
+        random 10% border off every frame is plainly an oversight rather than part of the method,
+        and it would make the attack's framing non-deterministic.
 
         :param images: The anonymized frames, BGR uint8, any sizes
         :param size: The square edge length the model was trained at
@@ -311,57 +342,158 @@ class Pix2PixGenerator(nn.Module):
         return [to_image(frame, image.shape[:2]) for frame, image in zip(generated, images)]
 
 
+class NLayerDiscriminator(nn.Module):
+    """
+    Upstream's ``basic`` discriminator: the 70x70 PatchGAN.
+
+    It judges overlapping 70x70 patches rather than the whole image, which is what keeps the
+    generator from settling on a plausible *average* face: a blurred output fails the patch test
+    everywhere even when it is globally about right.
+
+    **It returns logits, not probabilities.** ``--gan_mode vanilla`` is ``BCEWithLogitsLoss``,
+    which applies the sigmoid itself in a numerically stable way; a ``Sigmoid`` here as well would
+    square it and flatten the gradient at both ends.
+
+    It takes the condition and the judged image already concatenated, as upstream does -- the
+    caller cats them, see :meth:`Pix2Pix.discriminate`.
+    """
+
+    def __init__(
+        self,
+        input_nc: int = 6,
+        ndf: int = NDF,
+        n_layers: int = N_LAYERS_D,
+        norm_layer: Callable[[int], nn.Module] = nn.BatchNorm2d,
+    ):
+        """
+        :param input_nc: The channels arriving, i.e. twice an image's, since the anonymized frame
+            and the frame being judged are concatenated
+        :param ndf: The filter count of the first layer, doubling up to ``ndf * 8``
+        :param n_layers: How many strided layers before the final pair; 3 is what makes it 70x70
+        :param norm_layer: The normalisation, ``BatchNorm2d`` for ``--norm batch``
+        """
+        super().__init__()
+        use_bias = isinstance(norm_layer, functools.partial) and norm_layer.func is nn.InstanceNorm2d
+
+        sequence: list[nn.Module] = [
+            nn.Conv2d(input_nc, ndf, kernel_size=4, stride=2, padding=1),  # C64, no normalisation
+            nn.LeakyReLU(0.2, True),
+        ]
+
+        multiplier = 1
+        for layer in range(1, n_layers):
+            previous, multiplier = multiplier, min(2**layer, 8)
+            sequence += [
+                nn.Conv2d(ndf * previous, ndf * multiplier, kernel_size=4, stride=2, padding=1, bias=use_bias),
+                norm_layer(ndf * multiplier),
+                nn.LeakyReLU(0.2, True),
+            ]
+
+        # Stride 1 from here on: this is what fixes the receptive field at 70x70 rather than
+        # letting it grow to the whole image.
+        previous, multiplier = multiplier, min(2**n_layers, 8)
+        sequence += [
+            nn.Conv2d(ndf * previous, ndf * multiplier, kernel_size=4, stride=1, padding=1, bias=use_bias),
+            norm_layer(ndf * multiplier),
+            nn.LeakyReLU(0.2, True),
+            nn.Conv2d(ndf * multiplier, 1, kernel_size=4, stride=1, padding=1),  # one logit per patch
+        ]
+
+        self.model = nn.Sequential(*sequence)
+
+    def forward(self, input: Tensor) -> Tensor:
+        """
+        :param input: The condition and the judged image concatenated, ``(N, 6, H, W)``
+        :return: One logit per patch, ``(N, 1, 30, 30)`` at 256x256
+        """
+        return self.model(input)
+
+
 class Pix2Pix(nn.Module):
     """
-    The generator, the discriminator and the two losses that couple them.
+    The generator, the discriminator and the objective, i.e. upstream's ``Pix2PixModel`` minus its
+    checkpointing and visualisation.
 
-    Holding both as submodules means ``.to(device)``, ``.train()`` and ``.eval()`` reach both,
-    which is the thing most easily forgotten when they are two loose objects.
+    Holding both networks as submodules means ``.to(device)``, ``.train()`` and ``.eval()`` reach
+    both, which is the thing most easily forgotten when they are two loose objects.
     """
 
-    def __init__(self, generator: Pix2PixGenerator | None = None, discriminator: Pix2PixDiscriminator | None = None):
+    def __init__(self, generator: UnetGenerator | None = None, discriminator: NLayerDiscriminator | None = None):
         """
-        :param generator: The generator, or None to build a default one
-        :param discriminator: The discriminator, or None to build a default one
+        :param generator: The generator, or None to build and initialise a default one
+        :param discriminator: The discriminator, or None to build and initialise a default one
         """
         super().__init__()
 
-        self.generator = generator if generator is not None else Pix2PixGenerator()
-        self.discriminator = discriminator if discriminator is not None else Pix2PixDiscriminator()
-        # Takes logits. See the note on Pix2PixDiscriminator: the network must not sigmoid itself.
+        self.generator = generator if generator is not None else UnetGenerator()
+        self.discriminator = discriminator if discriminator is not None else NLayerDiscriminator()
+        if generator is None:
+            init_weights(self.generator)
+        if discriminator is None:
+            init_weights(self.discriminator)
+
+        # '--gan_mode vanilla'. Takes logits; see the note on NLayerDiscriminator.
         self.criterion_gan = nn.BCEWithLogitsLoss()
         self.criterion_l1 = nn.L1Loss()
+
+    def discriminate(self, condition: Tensor, image: Tensor) -> Tensor:
+        """
+        The discriminator's verdict on a conditioned image.
+
+        The concatenation lives here rather than inside the network so that the network's
+        ``forward`` keeps upstream's single-argument signature.
+
+        :param condition: The anonymized frames
+        :param image: The frames being judged, real targets or generator output
+        :return: One logit per patch
+        """
+        return self.discriminator(torch.cat([condition, image], 1))
+
+    def generator_terms(self, fake_verdict: Tensor, fake_images: Tensor, real_images: Tensor) -> tuple[Tensor, Tensor]:
+        """
+        The generator's two objectives, **unweighted and kept apart**.
+
+        Upstream tracks these as ``G_GAN`` and ``G_L1`` for the same reason they are split here:
+        the weighted sum is not a quality signal and reading it as one is misleading. The
+        adversarial term measures how far ahead the discriminator is, which in a healthy run
+        *grows*; the L1 term measures reconstruction, which is what should fall.
+
+        :param fake_verdict: The discriminator's logits for the generated frames
+        :param fake_images: The generated frames
+        :param real_images: The clear frames they were generated from
+        :return: The adversarial term and the L1 term, both scalars
+        """
+        adversarial = self.criterion_gan(fake_verdict, torch.ones_like(fake_verdict))
+        l1 = self.criterion_l1(fake_images, real_images)
+        return adversarial, l1
 
     def generator_loss(
         self,
         fake_verdict: Tensor,
         fake_images: Tensor,
         real_images: Tensor,
-        lambda_l1: float = 100.0,
+        lambda_l1: float = LAMBDA_L1,
     ) -> Tensor:
         """
-        How wrong the generator was: it wants the discriminator to call its output real, and it
-        wants the output to be close to the target.
+        Upstream's ``backward_G`` objective: fool the discriminator, and stay close to the target.
 
-        The L1 term is what ties the output to *this* face rather than to a plausible face, and
         ``lambda_l1`` is large because the adversarial term is on a per-patch log scale while L1
         is a mean absolute pixel difference in [0, 2].
 
         :param fake_verdict: The discriminator's logits for the generated frames
         :param fake_images: The generated frames
         :param real_images: The clear frames they were generated from
-        :param lambda_l1: The weight of the reconstruction term, 100 in the paper
+        :param lambda_l1: The weight of the reconstruction term
         :return: The scalar loss to backpropagate
         """
-        adversarial_loss = self.criterion_gan(fake_verdict, torch.ones_like(fake_verdict))
-        l1_loss = self.criterion_l1(fake_images, real_images)
-        return adversarial_loss + lambda_l1 * l1_loss
+        adversarial, l1 = self.generator_terms(fake_verdict, fake_images, real_images)
+        return adversarial + lambda_l1 * l1
 
     def discriminator_loss(self, real_verdict: Tensor, fake_verdict: Tensor) -> Tensor:
         """
-        How wrong the discriminator was: real frames should score high, generated ones low.
+        Upstream's ``backward_D``: real frames should score high, generated ones low.
 
-        Halved as in the paper, so that the discriminator learns at roughly half the generator's
+        Halved as upstream does, so that the discriminator learns at roughly half the generator's
         rate and does not run away from it.
 
         :param real_verdict: Its logits for the clear frames
@@ -379,18 +511,20 @@ class Pix2PixCheckpoint:
     Everything needed to either resume training or run the trained generator.
 
     ``anonymizer`` and ``size`` are in here on purpose. One model is trained per anonymization
-    method, so a checkpoint that did not name its method would be indistinguishable from any
-    other and could be pointed at the wrong branch of the sweep, where it would produce
-    plausible-looking frames and a quietly meaningless number.
+    method, so a checkpoint that did not name its method would be indistinguishable from any other
+    and could be pointed at the wrong branch of the sweep, where it would produce plausible-looking
+    frames and a quietly meaningless number.
 
     :param anonymizer: The key in ``meles.anonymization.ANONYMIZERS`` this was trained against
     :param size: The square edge length it was trained at
     :param epoch: The number of epochs completed
-    :param generator: The generator's ``state_dict``
+    :param generator: The generator's ``state_dict``, in upstream's key layout
     :param discriminator: The discriminator's ``state_dict``, absent in an inference-only export
     :param generator_optimizer: The generator optimiser's ``state_dict``, for resuming
     :param discriminator_optimizer: The discriminator optimiser's ``state_dict``, for resuming
     :param history: The per-epoch losses, keyed as in ``Pix2PixTrainer.history``
+    :param schedule: The ``(n_epochs, n_epochs_decay)`` the run was configured with, so that a
+        resumed run picks the learning rate schedule back up where it left it
     """
 
     anonymizer: str
@@ -401,6 +535,7 @@ class Pix2PixCheckpoint:
     generator_optimizer: dict[str, Any] | None = None
     discriminator_optimizer: dict[str, Any] | None = None
     history: dict[str, list[float]] = field(default_factory=dict)
+    schedule: tuple[int, int] = (N_EPOCHS, N_EPOCHS_DECAY)
 
 
 def save_checkpoint(checkpoint: Pix2PixCheckpoint, path: str | Path) -> Path:
@@ -428,6 +563,7 @@ def save_checkpoint(checkpoint: Pix2PixCheckpoint, path: str | Path) -> Path:
         "generator_optimizer": checkpoint.generator_optimizer,
         "discriminator_optimizer": checkpoint.discriminator_optimizer,
         "history": checkpoint.history,
+        "schedule": list(checkpoint.schedule),
     }
 
     temporary = path.with_name(path.name + ".part")
@@ -461,6 +597,7 @@ def load_checkpoint(path: str | Path, map_location: str | torch.device = "cpu") 
             f"{CHECKPOINT_FORMAT}. Retrain it, or convert it by hand."
         )
 
+    schedule = payload.get("schedule") or (N_EPOCHS, N_EPOCHS_DECAY)
     return Pix2PixCheckpoint(
         anonymizer=payload["anonymizer"],
         size=payload["size"],
@@ -470,6 +607,7 @@ def load_checkpoint(path: str | Path, map_location: str | torch.device = "cpu") 
         generator_optimizer=payload.get("generator_optimizer"),
         discriminator_optimizer=payload.get("discriminator_optimizer"),
         history=payload.get("history", {}),
+        schedule=(int(schedule[0]), int(schedule[1])),
     )
 
 
@@ -477,7 +615,7 @@ def load_generator(
     path: str | Path,
     device: str | torch.device = "cpu",
     anonymizer: str | None = None,
-) -> Pix2PixGenerator:
+) -> UnetGenerator:
     """
     Import a trained generator for inference, without its discriminator or optimisers.
 
@@ -496,6 +634,37 @@ def load_generator(
             "One model is trained per anonymization method; using the wrong one silently measures nothing."
         )
 
-    generator = Pix2PixGenerator()
+    generator = UnetGenerator()
     generator.load_state_dict(checkpoint.generator)
+    return generator.to(device)
+
+
+def import_upstream_generator(path: str | Path, device: str | torch.device = "cpu") -> UnetGenerator:
+    """
+    Load a ``latest_net_G.pth`` written by ``junyanz/pytorch-CycleGAN-and-pix2pix`` itself.
+
+    This is the reason :class:`UnetGenerator` is a port rather than a reimplementation. Anyone
+    who ran that repository -- SEBA, had they published their weights -- produced a file that
+    drops straight in here, with no key remapping.
+
+    It has to be a ``unet_256`` trained with ``--norm batch``, which is what ``--model pix2pix``
+    selects; a ``resnet_9blocks`` or an instance-norm run will not match and will say so.
+
+    :param path: The '.pth' to read
+    :param device: The device to put the generator on
+    :return: The generator, on ``device``
+    :raises ValueError: If the file is not a ``unet_256`` batch-norm generator
+    """
+    state = torch.load(Path(path), map_location=device, weights_only=True)
+
+    generator = UnetGenerator()
+    try:
+        generator.load_state_dict(state)
+    except RuntimeError as mismatch:
+        raise ValueError(
+            f"{path} is not a 'unet_256' generator trained with '--norm batch'. pix2pix's own "
+            f"defaults produce one; a different '--netG' or '--norm' does not. ({mismatch})"
+        ) from mismatch
+
+    logger.info("Imported an upstream pix2pix generator", extra={"path": str(path)})
     return generator.to(device)
