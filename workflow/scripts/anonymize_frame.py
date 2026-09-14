@@ -7,12 +7,7 @@ from tqdm import tqdm
 from typing import TYPE_CHECKING
 
 from meles.runtime import logs, runtime
-from meles.anonymization.anonymizer import (
-    NoAnonymizer,
-    GaussianBlurAnonymizer,
-    BlackBarAnonymizer,
-    PixelationAnonymizer,
-)
+from meles import anonymization
 from meles.detection import default_detector
 
 # Fix snakemake typechecking errors
@@ -24,12 +19,10 @@ if TYPE_CHECKING:
 # Configure the module logger. Logs are passed into the Snakemake configured logfile.
 logger = logging.getLogger(__name__)
 
-ANONYMIZERS = {
-    "none": NoAnonymizer(),
-    "gaussianblur": GaussianBlurAnonymizer(),
-    "blackbar": BlackBarAnonymizer(),
-    "pixelation": PixelationAnonymizer(),
-}
+# Shared with 'meles.training', which anonymizes clear images to build the pix2pix training pairs
+# and has to apply the very same anonymization this rule applies. Adding a method means adding it
+# to 'meles.anonymization.ANONYMIZERS' and to the leg field in 'workflow/config.yaml'.
+ANONYMIZERS = anonymization.ANONYMIZERS
 
 
 def main(input_path: Path, output_path: Path, method: str):
