@@ -75,16 +75,28 @@ experiment:
   #    - identity_consensus_beta1
   #    - identity_normweighted
 
-  name: arcface_bicubic_against_clear_gallery
+  #name: arcface_bicubic_against_clear_gallery
+  #samples:
+  #  frame_anonymizer:
+  #  - none
+  #  - gaussianblur
+  #  - blackbar
+  #  - pixelation
+  #  frame_aggregator:
+  #  - video_none
+  #  - video_frame_bicubic
+  #  frame_recognizer: arcface
+  #gallery:
+  #  frame_anonymizer: none
+  #  frame_aggregator: video_none
+  #  embedding_aggregator: video_normweighted
+
+  name: arcface_pix2pix_pixelation
   samples:
     frame_anonymizer:
-    - none
-    - gaussianblur
-    - blackbar
     - pixelation
     frame_aggregator:
-    - video_none
-    - video_frame_bicubic
+    - video_frame_pix2pix
     frame_recognizer: arcface
   gallery:
     frame_anonymizer: none

@@ -28,10 +28,13 @@ REGISTRIES = {
     "embed_frame": ("EMBEDDERS", "frame_recognizer"),
 }
 
-# Each aggregation script, and the experiment-leg field whose scoped keys its 'resolve' must accept.
+# Each aggregation script, the experiment-leg field whose scoped keys its 'resolve' must accept, and
+# the field 'resolve' takes as its second argument, if it takes one. 'aggregate_frame' resolves
+# against the anonymization as well, because a learned de-anonymization is trained against one
+# method; 'aggregate_embedding' is a stage past any of that and resolves on the key alone.
 SCOPED_REGISTRIES = {
-    "aggregate_frame": "frame_aggregator",
-    "aggregate_embedding": "embedding_aggregator",
+    "aggregate_frame": ("frame_aggregator", "frame_anonymizer"),
+    "aggregate_embedding": ("embedding_aggregator", None),
 }
 
 # Every script that has to import, whether or not the configured experiment currently reaches it.
@@ -82,12 +85,24 @@ def test_experiment_methods_have_a_registry_entry(script: str, leg: str, experim
 @pytest.mark.parametrize("script", sorted(SCOPED_REGISTRIES))
 @pytest.mark.parametrize("leg", ["samples", "gallery"])
 def test_aggregators_name_a_scope_and_a_method(script: str, leg: str, experiment: Experiment) -> None:
-    """Every configured aggregator has to resolve, i.e. name both a known scope and a known method."""
-    resolve = load_script(script).resolve
+    """
+    Every configured aggregator has to resolve, i.e. name both a known scope and a known method.
 
-    for method in getattr(getattr(experiment, leg), SCOPED_REGISTRIES[script]):
-        group_by, aggregator = resolve(method)
-        assert group_by and aggregator is not None
+    For 'aggregate_frame' that means against every anonymization its leg names, not just one of
+    them: the workflow expands the leg as a product, so a leg pairing a method-specific
+    de-anonymization with an anonymization it has no model for is a job that fails at run time.
+    """
+    resolve = load_script(script).resolve
+    field, against = SCOPED_REGISTRIES[script]
+    configured = getattr(experiment, leg)
+
+    for method in getattr(configured, field):
+        arguments = (
+            [(method, anonymization) for anonymization in getattr(configured, against)] if against else [(method,)]
+        )
+        for argument in arguments:
+            group_by, aggregator = resolve(*argument)
+            assert group_by and aggregator is not None
 
 
 def test_the_frame_aggregator_refuses_the_identity_scope() -> None:
@@ -122,6 +137,36 @@ def test_building_the_registry_does_not_load_any_weights(monkeypatch) -> None:
         raise AssertionError(f"weights for {spec.file_name} were resolved at import time")
 
     monkeypatch.setattr(weights, "resolve", refuse)
-    for name in ("embed_frame", "anonymize_frame"):
+    for name in ALL_SCRIPTS:
         sys.modules.pop(f"_workflow_{name}", None)
         load_script(name)
+
+
+def test_resolving_a_trained_aggregator_loads_no_checkpoint(monkeypatch) -> None:
+    """
+    The same rule one level down, for the aggregators that are trained rather than downloaded.
+
+    A trained de-anonymization is constructed by 'resolve' rather than by the registry, so it is
+    built once per job instead of once per import -- but the model behind it is a few hundred
+    megabytes, and construction still has to be free: a job resolves before it knows whether the
+    output is even stale.
+    """
+    from meles.frame_aggregation import pix2pix
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("the generator was loaded before a frame was aggregated")
+
+    monkeypatch.setattr(pix2pix, "load_generator", refuse)
+    _, aggregator = load_script("aggregate_frame").resolve("video_frame_pix2pix", "pixelation")
+    assert isinstance(aggregator, pix2pix.Pix2PixFrameAggregator)
+
+
+def test_a_trained_aggregator_refuses_to_resolve_without_an_anonymization() -> None:
+    """
+    One model is trained per anonymization method, so a key naming one is only half a resolution.
+    Refusing is what keeps a missing wildcard from silently picking a model for the wrong frames.
+    """
+    resolve = load_script("aggregate_frame").resolve
+
+    with pytest.raises(ValueError, match="trained against one anonymization"):
+        resolve("video_frame_pix2pix")

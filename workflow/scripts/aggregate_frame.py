@@ -7,6 +7,7 @@ from tqdm import tqdm
 from typing import TYPE_CHECKING
 
 from meles.common import Images
+from meles.frame_aggregation.pix2pix import Pix2PixFrameAggregator
 from meles.runtime import logs, runtime
 from meles.frame_aggregation import resample
 from meles.frame_aggregation.aggregator import FrameAggregator, NoFrameAggregator
@@ -45,7 +46,8 @@ UNSUPPORTED_SCOPES = {
     ),
 }
 
-# Every 'frame_aggregator' named by an experiment leg in the config needs an entry here.
+# Every 'frame_aggregator' named by an experiment leg in the config needs an entry here or in
+# TARGETED_AGGREGATORS below.
 # A 'frame_*' method is frame-wise: it returns as many frames as it was given and combines nothing,
 # which is how the de-anonymizations fit a rule otherwise about aggregation.
 # noinspection SpellCheckingInspection
@@ -54,15 +56,33 @@ AGGREGATORS = {
     "frame_bicubic": resample.BicubicFrameAggregator(),
 }
 
+# The methods that are *trained against one anonymization* rather than being a constant of the
+# method, so that one key names a different model per branch of the sweep. They are built from the
+# '{frame_anonymization}' wildcard of the job rather than from the aggregator key on purpose: a key
+# that carried the anonymization itself ('frame_pix2pix_pixelation') would resolve to the pixelation
+# model whatever frames the job was actually given, which is exactly the mistake 'load_generator's
+# anonymizer check exists to catch -- and it can only catch it if it is told what the job is running
+# on rather than what the config believes it is running on.
+# The value is therefore a factory rather than an instance, and it has to stay as cheap to call as
+# the constructors above are: 'Pix2PixFrameAggregator' loads its weights on first use, not in its
+# constructor, so that resolving one never reads a few hundred megabytes a job may not need.
+# noinspection SpellCheckingInspection
+TARGETED_AGGREGATORS = {
+    "frame_pix2pix": Pix2PixFrameAggregator,
+}
 
-def resolve(frame_aggregator: str) -> tuple[list[str], FrameAggregator]:
+
+def resolve(frame_aggregator: str, frame_anonymization: str | None = None) -> tuple[list[str], FrameAggregator]:
     """
     Read a '{scope}_{method}' key as the columns defining a group and the aggregator to collapse it.
 
     :param frame_aggregator: The method key, e.g. 'video_none'
+    :param frame_anonymization: The anonymization the frames being aggregated carry, e.g.
+        'pixelation'. Only the TARGETED_AGGREGATORS need it, and they refuse to resolve without it
     :return: The complete grouping columns, always including the identity and the fold, and the
         aggregator to collapse each group with
-    :raises ValueError: If either half names something the registries have no entry for
+    :raises ValueError: If either half names something the registries have no entry for, or if a
+        targeted method was named without the anonymization it is supposed to undo
     """
     scope, _, method = frame_aggregator.partition("_")
 
@@ -78,9 +98,21 @@ def resolve(frame_aggregator: str) -> tuple[list[str], FrameAggregator]:
         )
 
     aggregator = AGGREGATORS.get(method)
-    if aggregator is None:
-        raise ValueError(f"Unknown aggregation method {method!r} in {frame_aggregator!r}")
-    return ALWAYS_GROUPED + separators, aggregator
+    if aggregator is not None:
+        return ALWAYS_GROUPED + separators, aggregator
+
+    targeted = TARGETED_AGGREGATORS.get(method)
+    if targeted is None:
+        raise ValueError(
+            f"Unknown aggregation method {method!r} in {frame_aggregator!r}, expected one of "
+            f"{sorted(AGGREGATORS) + sorted(TARGETED_AGGREGATORS)}"
+        )
+    if frame_anonymization is None:
+        raise ValueError(
+            f"Aggregation method {method!r} in {frame_aggregator!r} is trained against one anonymization, "
+            f"so it cannot be resolved without knowing which one the frames carry"
+        )
+    return ALWAYS_GROUPED + separators, targeted(frame_anonymization)
 
 
 def unchanged(before: Images, after: Images) -> bool:
@@ -106,13 +138,15 @@ def read(path: Path):
     return image
 
 
-def main(input_path: Path, split_path: Path, output_path: Path, method: str):
+def main(input_path: Path, split_path: Path, output_path: Path, method: str, anonymization: str | None = None):
     # Crate the output directory if it does not exist
     logger.debug("Generating output directory")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Get the scope and the aggregator based on the provided method key.
-    group_by, aggregator = resolve(method)
+    # Get the scope and the aggregator based on the provided method key. The anonymization the input
+    # carries is passed on as well: it is what the TARGETED_AGGREGATORS are built against, and only
+    # they need it, so it stays optional here and 'resolve' refuses the ones that cannot do without.
+    group_by, aggregator = resolve(method, anonymization)
 
     # Read the input dataset structure and attach the fold of every video. The split holds one row
     # per identity-video, so the merge never duplicates a frame. The fold only rides along as part
@@ -229,4 +263,5 @@ if __name__ == "__main__":
         split_path=Path(snakemake.input.k_split),
         output_path=Path(snakemake.output.dataset),
         method=snakemake.wildcards.get("frame_aggregation"),
+        anonymization=snakemake.wildcards.get("frame_anonymization"),
     )

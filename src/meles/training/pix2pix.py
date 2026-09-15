@@ -27,7 +27,6 @@ import torch
 from torch import Tensor, nn, optim
 from torch.utils.data import DataLoader
 
-from meles import weights
 from meles.frame_aggregation.pix2pix import (
     BETAS,
     LAMBDA_L1,
@@ -39,15 +38,19 @@ from meles.frame_aggregation.pix2pix import (
     Pix2Pix,
     Pix2PixCheckpoint,
     UnetGenerator,
+    checkpoint_path,
+    default_device,
     load_checkpoint,
     save_checkpoint,
 )
 
 logger = logging.getLogger(__name__)
 
-# Where trained models are kept, next to the downloaded ONNX weights. Overridden by the same
-# MELES_WEIGHTS_DIR the download cache uses, and gitignored for the same reason.
-CHECKPOINT_DIR = "pix2pix"
+# 'checkpoint_path' and 'default_device' are imported rather than defined here, and re-exported by
+# 'meles.training' as they always were. They sit with the checkpoint format in
+# 'meles.frame_aggregation.pix2pix' because inference needs them too -- the frame aggregator has to
+# find the same file this writes -- and the dependency only runs one way: the trainer imports the
+# networks, never the other way round.
 
 
 @dataclass(frozen=True)
@@ -71,25 +74,6 @@ class Losses:
     discriminator: float
     adversarial: float
     l1: float
-
-
-def default_device() -> torch.device:
-    """
-    :return: The CUDA device if there is one, otherwise the CPU
-    """
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-def checkpoint_path(anonymizer: str, directory: str | Path | None = None) -> Path:
-    """
-    The conventional file for the model trained against one anonymization.
-
-    :param anonymizer: The key in ``meles.anonymization.ANONYMIZERS``
-    :param directory: The directory to put it in, defaulting to ``<weights cache>/pix2pix``
-    :return: The checkpoint path, which need not exist yet
-    """
-    root = Path(directory) if directory is not None else weights.cache_dir() / CHECKPOINT_DIR
-    return root / f"{anonymizer}.pt"
 
 
 class Pix2PixTrainer:

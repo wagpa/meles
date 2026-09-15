@@ -42,7 +42,9 @@ import numpy as np
 import torch
 from torch import Tensor, nn
 
-from meles.common import Image
+from meles import weights
+from meles.common import Image, Images
+from meles.frame_aggregation.aggregator import FrameAggregator
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +85,24 @@ INIT_GAIN = 0.02
 # The version of the checkpoint payload below. Stored in the file so that a checkpoint written
 # by an older layout fails loudly instead of loading into mismatched state dicts.
 CHECKPOINT_FORMAT = 2
+
+# Where trained models are kept, next to the downloaded ONNX weights. Overridden by the same
+# MELES_WEIGHTS_DIR the download cache uses, and gitignored for the same reason.
+CHECKPOINT_DIR = "pix2pix"
+
+# The suffix of an inference-only export, i.e. one written with 'inference_only=True' and holding
+# the generator alone. A third of the size of the full checkpoint, which also carries the
+# discriminator and both optimisers, and all the attack needs.
+GENERATOR_SUFFIX = ".generator.pt"
+
+# How many frames go through the generator at once. Unlike BATCH_SIZE above this is not upstream's
+# -- it batches nothing at test time -- and it is not part of the method either, only of how the
+# method is run: a group here is one identity-video, 48-75 frames on YouTube Faces, and a U-Net
+# holds every level's feature maps and their skip connections for the whole batch at once.
+# Batching is only sound because 'Pix2PixFrameAggregator' switches the model to eval mode; with
+# the BatchNorms on batch statistics, where 'deanonymize' otherwise leaves them, a frame's output
+# would depend on which other frames landed in its chunk.
+INFERENCE_BATCH_SIZE = 16
 
 
 def _interpolation(source: tuple[int, int], target: tuple[int, int]) -> int:
@@ -611,6 +631,29 @@ def load_checkpoint(path: str | Path, map_location: str | torch.device = "cpu") 
     )
 
 
+def default_device() -> torch.device:
+    """
+    :return: The CUDA device if there is one, otherwise the CPU
+    """
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def checkpoint_path(anonymizer: str, directory: str | Path | None = None) -> Path:
+    """
+    The conventional file for the model trained against one anonymization.
+
+    This lives beside the checkpoint format rather than in ``meles.training`` because inference
+    has to find the file too, and the frame aggregator cannot import the trainer: the trainer
+    imports the networks from here.
+
+    :param anonymizer: The key in ``meles.anonymization.ANONYMIZERS``
+    :param directory: The directory to put it in, defaulting to ``<weights cache>/pix2pix``
+    :return: The checkpoint path, which need not exist yet
+    """
+    root = Path(directory) if directory is not None else weights.cache_dir() / CHECKPOINT_DIR
+    return root / f"{anonymizer}.pt"
+
+
 def load_generator(
     path: str | Path,
     device: str | torch.device = "cpu",
@@ -668,3 +711,91 @@ def import_upstream_generator(path: str | Path, device: str | torch.device = "cp
 
     logger.info("Imported an upstream pix2pix generator", extra={"path": str(path)})
     return generator.to(device)
+
+
+class Pix2PixFrameAggregator(FrameAggregator):
+    """
+    The trained generator as a frame aggregator, i.e. SEBA's pix2pix attack inside the sweep.
+
+    Like the resample attack this is a **de-anonymization, not an aggregation**: it returns one
+    frame per input and combines nothing, which is what the ``frame_*`` prefix on its registry key
+    says and what lets ``aggregate_frame`` keep each frame's original name.
+
+    It is specific to the anonymization it undoes -- one model is trained per method -- so it takes
+    the anonymizer rather than a path and finds the checkpoint by the same convention the trainer
+    writes it under. ``load_generator`` is given the anonymizer as well, so a model pointed at the
+    wrong branch of the sweep raises instead of producing plausible frames and a meaningless score.
+
+    **The weights are loaded on first use, not in the constructor.** The workflow's registries build
+    every entry at import time, so a constructor that read its checkpoint would load a few hundred
+    megabytes into every ``aggregate_frame`` job, including the ones running the ``none`` baseline.
+    """
+
+    def __init__(
+        self,
+        anonymizer: str,
+        directory: str | Path | None = None,
+        batch_size: int = INFERENCE_BATCH_SIZE,
+    ):
+        """
+        :param anonymizer: The key in ``meles.anonymization.ANONYMIZERS`` this undoes, which both
+            names the checkpoint and is checked against what the checkpoint says it was trained on
+        :param directory: Where the checkpoints are, defaulting to ``<weights cache>/pix2pix``
+        :param batch_size: How many frames to run through the generator at once
+        """
+        super().__init__()
+        self.anonymizer = anonymizer
+        self.directory = directory
+        self.batch_size = batch_size
+        self._generator: UnetGenerator | None = None
+
+    def path(self) -> Path:
+        """
+        The checkpoint to read.
+
+        The inference-only export is preferred and the full checkpoint is the fallback, because
+        the two are written side by side and only the generator is needed here.
+
+        :return: The generator export if it exists, otherwise the full checkpoint
+        :raises FileNotFoundError: If neither exists
+        """
+        full = checkpoint_path(self.anonymizer, self.directory)
+        export = full.with_suffix(GENERATOR_SUFFIX)
+        if export.exists():
+            return export
+        if full.exists():
+            return full
+        raise FileNotFoundError(
+            f"No pix2pix model for the {self.anonymizer!r} anonymization at {export} or {full}. "
+            f"One model is trained per method; train it (see Pix2PixTraining.md) or point "
+            f"{weights.CACHE_ENV} at where it is."
+        )
+
+    @property
+    def generator(self) -> UnetGenerator:
+        """
+        :return: The generator, loaded on first access and kept for the rest of the job
+        """
+        generator = self._generator
+        if generator is None:
+            generator = load_generator(self.path(), device=default_device(), anonymizer=self.anonymizer)
+            # 'deanonymize' deliberately leaves the mode alone, which keeps SEBA's test-time
+            # behaviour: it passes no '--eval', so dropout stays on and the BatchNorms use batch
+            # rather than running statistics. That is not wanted here. The sweep scores these
+            # frames, so the same video has to de-anonymize the same way twice, and only the
+            # running statistics make a frame's output independent of the chunk it landed in
+            # (measured: identical but for float rounding, 1/255 on 2 pixels in 100k).
+            generator.eval()
+            self._generator = generator
+        return generator
+
+    def aggregate(self, images: Images) -> Images:
+        """
+        :param images: The anonymized frames of one group
+        :return: One de-anonymized frame per input, each at its input's size
+        """
+        frames = list(images)
+        deanonymized: list[Image] = []
+        for start in range(0, len(frames), self.batch_size):
+            deanonymized.extend(self.generator.deanonymize(frames[start : start + self.batch_size]))
+        return deanonymized
