@@ -95,6 +95,7 @@ experiment:
   samples:
     frame_anonymizer:
     - pixelation
+    - gaussianblur
     frame_aggregator:
     - video_frame_pix2pix
     frame_recognizer: arcface
