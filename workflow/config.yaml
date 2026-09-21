@@ -95,6 +95,7 @@ experiment:
   samples:
     frame_anonymizer:
     - pixelation
+    - blackbar
     - gaussianblur
     frame_aggregator:
     - video_frame_pix2pix
