@@ -15,7 +15,7 @@ import pandas as pd
 import pytest
 
 from meles.detection import YuNetDetector
-from meles.recognizer import models
+from meles.frame_embedder import models
 
 # The dataset structure the workflow runs on by default.
 DATASET = Path("data/ytfaces.parquet")

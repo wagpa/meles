@@ -5,8 +5,8 @@ import pandas as pd
 from typing import TYPE_CHECKING
 
 from meles.runtime import logs, runtime
-from meles.recognizer import models
-from meles.recognizer.frame import FrameEmbedder
+from meles.frame_embedder import models
+from meles.frame_embedder.frame import FrameEmbedder
 
 # Fix snakemake typechecking errors
 if TYPE_CHECKING:

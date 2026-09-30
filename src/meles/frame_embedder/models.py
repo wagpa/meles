@@ -16,7 +16,7 @@ documentation, because none of the three models documents its own completely:
 """
 
 from meles import weights
-from meles.recognizer.frame import EmbedderSpec
+from meles.frame_embedder.frame import EmbedderSpec
 
 # The OpenCV model zoo stores '*.onnx' with git-lfs, so 'raw.githubusercontent.com' would
 # serve a pointer file rather than the model -- hence the 'media' host.

@@ -119,7 +119,7 @@ def test_the_frame_aggregator_refuses_the_identity_scope() -> None:
 
 def test_embedder_registries_cover_every_model() -> None:
     """The frame embedder registry must expose every model 'meles.recognizer.models' defines."""
-    from meles.recognizer import models
+    from meles.frame_embedder import models
 
     registry = getattr(load_script("embed_frame"), "EMBEDDERS")
     assert set(registry) == set(models.SPECS)

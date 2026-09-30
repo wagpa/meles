@@ -34,7 +34,7 @@ in `models/` (override with `MELES_WEIGHTS_DIR`), and each one is checksummed:
 
 ```shell
 # Optional: download every model up front rather than during the first run
-uv run python -c "from meles.recognizer import models; models.prefetch()"
+uv run python -c "from meles.frame_embedder import models; models.prefetch()"
 ```
 
 Inference tries CUDA and falls back to the CPU, logging which provider actually bound. Force a

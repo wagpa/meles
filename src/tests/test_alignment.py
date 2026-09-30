@@ -24,7 +24,7 @@ from meles.detection import (
     umeyama,
     whole_frame,
 )
-from meles.recognizer import models
+from meles.frame_embedder import models
 
 
 def test_umeyama_recovers_a_known_similarity_transform() -> None:

@@ -15,9 +15,9 @@ from helpers import paths, separation
 
 from meles import weights
 from meles.detection import YuNetDetector
-from meles.recognizer import models
-from meles.recognizer.frame import FrameEmbedder
-from meles.recognizer.session import OnnxSession, providers
+from meles.frame_embedder import models
+from meles.frame_embedder.frame import FrameEmbedder
+from meles.frame_embedder.session import OnnxSession, providers
 
 # The mean same-identity cosine similarity minus the mean cross-identity one, below which a
 # model is not usefully discriminating. All three measure around 0.71 to 0.78 on this sample,

@@ -4,7 +4,7 @@ import pandas as pd
 from typing import TYPE_CHECKING
 
 from meles.runtime import logs, runtime
-from meles.embedding_aggregation import clustering, consensus, pooling, normweighted
+from meles.embedding_aggregation import consensus, pooling, normweighted
 from meles.embedding_aggregation.aggregator import EmbeddingAggregator, NoEmbeddingAggregator
 
 # Fix snakemake typechecking errors
@@ -42,10 +42,6 @@ AGGREGATORS = {
     "pooling_min": pooling.MinPoolingEmbeddingAggregator(),
     "pooling_max": pooling.MaxPoolingEmbeddingAggregator(),
     "pooling_median": pooling.MedianPoolingEmbeddingAggregator(),
-    "clustering_mean_d1_min3": clustering.MeanClusteringAggregator(distance_threshold=1.0, min_cluster_size=3),
-    "clustering_mean_d08_min3": clustering.MeanClusteringAggregator(distance_threshold=0.8, min_cluster_size=3),
-    "clustering_median_d1_min3": clustering.MedianClusteringAggregator(distance_threshold=1.0, min_cluster_size=3),
-    "clustering_median_d08_min3": clustering.MedianClusteringAggregator(distance_threshold=0.8, min_cluster_size=3),
     "consensus_beta1": consensus.ConsensusEmbeddingAggregator(beta=1.0),
     "consensus_beta5": consensus.ConsensusEmbeddingAggregator(beta=5.0),
     "consensus_beta20": consensus.ConsensusEmbeddingAggregator(beta=20.0),

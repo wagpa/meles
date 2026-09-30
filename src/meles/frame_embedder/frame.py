@@ -22,8 +22,8 @@ from meles.detection import (
     prepare_face,
     whole_frame,
 )
-from meles.recognizer.embedder import Embedder
-from meles.recognizer.session import OnnxSession
+from meles.frame_embedder.embedder import Embedder
+from meles.frame_embedder.session import OnnxSession
 
 logger = logging.getLogger(__name__)
 
