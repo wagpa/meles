@@ -30,6 +30,7 @@ wildcard_constraints:
     samples_frame_aggregation=r"[^/]+",
     samples_frame_embedding=r"[^/]+",
     samples_embedding_aggregation=r"[^/]+",
+    score_aggregation=r"[^/]+",
 
 
 # Anonymizes the dataset for each anonymization method. It takes the dataset as input and generates a
@@ -147,8 +148,8 @@ rule score_experiment:
         gallery_dataset=RESULT_PATH / "aggregate_embedding/{gallery_frame_anonymization}/{gallery_frame_aggregation}/{gallery_frame_embedding}/{gallery_embedding_aggregation}/structure.parquet",
         samples_dataset=RESULT_PATH / "aggregate_embedding/{samples_frame_anonymization}/{samples_frame_aggregation}/{samples_frame_embedding}/{samples_embedding_aggregation}/structure.parquet",
     output:
-        dataset=RESULT_PATH / "score_frame/{gallery_frame_anonymization}/{gallery_frame_aggregation}/{gallery_frame_embedding}/{gallery_embedding_aggregation}/-/{samples_frame_anonymization}/{samples_frame_aggregation}/{samples_frame_embedding}/{samples_embedding_aggregation}/structure.parquet",
-    log: LOG_PATH / "score_frame/{gallery_frame_anonymization}/{gallery_frame_aggregation}/{gallery_frame_embedding}/{gallery_embedding_aggregation}/-/{samples_frame_anonymization}/{samples_frame_aggregation}/{samples_frame_embedding}/{samples_embedding_aggregation}.log"
+        dataset=RESULT_PATH / "score_frame/{gallery_frame_anonymization}/{gallery_frame_aggregation}/{gallery_frame_embedding}/{gallery_embedding_aggregation}/-/{samples_frame_anonymization}/{samples_frame_aggregation}/{samples_frame_embedding}/{samples_embedding_aggregation}/-/{score_aggregation}/structure.parquet",
+    log: LOG_PATH / "score_frame/{gallery_frame_anonymization}/{gallery_frame_aggregation}/{gallery_frame_embedding}/{gallery_embedding_aggregation}/-/{samples_frame_anonymization}/{samples_frame_aggregation}/{samples_frame_embedding}/{samples_embedding_aggregation}/-/{score_aggregation}.log"
     script: "scripts/score.py"
 
 
@@ -161,7 +162,7 @@ rule score_experiment:
 rule collect_recognition:
     input:
         frame=expand(
-            RESULT_PATH / "score_frame/{gallery_frame_anonymization}/{gallery_frame_aggregation}/{gallery_frame_embedding}/{gallery_embedding_aggregation}/-/{samples_frame_anonymization}/{samples_frame_aggregation}/{samples_frame_embedding}/{samples_embedding_aggregation}/structure.parquet",
+            RESULT_PATH / "score_frame/{gallery_frame_anonymization}/{gallery_frame_aggregation}/{gallery_frame_embedding}/{gallery_embedding_aggregation}/-/{samples_frame_anonymization}/{samples_frame_aggregation}/{samples_frame_embedding}/{samples_embedding_aggregation}/-/{score_aggregation}/structure.parquet",
             gallery_frame_anonymization=EXPERIMENT.gallery.frame_anonymizer,
             gallery_frame_aggregation=EXPERIMENT.gallery.frame_aggregator,
             gallery_frame_embedding=EXPERIMENT.gallery.frame_recognizer,
@@ -170,6 +171,7 @@ rule collect_recognition:
             samples_frame_aggregation=EXPERIMENT.samples.frame_aggregator,
             samples_frame_embedding=EXPERIMENT.samples.frame_recognizer,
             samples_embedding_aggregation=EXPERIMENT.samples.embedding_aggregator,
+            score_aggregation=EXPERIMENT.score_aggregation,
         ),
     output:
         dataset=RESULT_PATH / f"{EXPERIMENT.name}.parquet",

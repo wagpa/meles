@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Any, List, Dict
 from itertools import product
 
+SCORE_DEFAULT = "weighted"
 LEG_DEFAULTS = {
     "frame_anonymizer": "none",
     # Both aggregators carry their scope, as '{scope}_{method}'. The frame aggregator only has the
@@ -31,18 +32,22 @@ class Experiment:
     name: str
     samples: ExperimentLeg
     gallery: ExperimentLeg
+    score_aggregator: List[str]
 
 
 def parse_experiment(spec: dict[str, Any]) -> Experiment:
     """Parse an experiment from a workflow config specification. The spec is flattened into the set of experiments."""
     name = spec["name"] or "unknown"
+    score_spec = spec["score_aggregator"] or "weighted"
 
     # Get the experiment legs, the gallery defaults to the samples. Each should be a dict of string(s).
     samples_spec = {**LEG_DEFAULTS, **spec["samples"]}
     gallery_spec = {**samples_spec, **spec["gallery"]}
 
+    def item_list(v: Any) -> List[str]:
+        return [v] if isinstance(v, str) else v
     def dict_lists(d: Dict[str, Any]) -> Dict[str, List[str]]:
-        return {k: [v] if isinstance(v, str) else v for k, v in d.items()}
+        return {k: item_list(v) for k, v in d.items()}
 
     samples_specs = dict_lists(samples_spec)
     gallery_specs = dict_lists(gallery_spec)
@@ -51,6 +56,7 @@ def parse_experiment(spec: dict[str, Any]) -> Experiment:
         name,
         ExperimentLeg(**samples_specs),
         ExperimentLeg(**gallery_specs),
+        score_aggregator=item_list(score_spec),
     )
 
 

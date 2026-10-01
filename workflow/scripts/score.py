@@ -15,8 +15,11 @@ if TYPE_CHECKING:
 # Configure the module logger. Logs are passed into the Snakemake configured logfile.
 logger = logging.getLogger(__name__)
 
+AGGREGATORS = {
+    "none": 0
+}
 
-def main(gallery_path: Path, samples_path: Path, output_path: Path, method: Dict):
+def main(gallery_path: Path, samples_path: Path, output_path: Path, method: str, experiment: Dict):
     # Crate the output directory if it does not exist
     logger.debug("Generating output directory")
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -53,6 +56,17 @@ def main(gallery_path: Path, samples_path: Path, output_path: Path, method: Dict
                 f"({len(samples_k_df)} rows); check that both legs cover the same folds"
             )
 
+        # TODO update from here with chosen method!
+
+        # 1. Calculate similarity matrix (chunked rows)
+        # 2. Calculate max identity [rows] (bias: more identity frames increase high value chance)
+        # 3. Calculate none/max/mean frame/video prediction [cols]
+        # 4. Compare prediction against label per frame/video [cols] (get top-k scores)
+        # 5. Calculate accuracy per video (noop for already aggregated frames) [cols]
+        # 6. (over all folds) Calculate avg accuracy per sample video (avg/std) [cols]
+
+        # TODO old stuff, ignore for now
+
         # Collect the embeddings. They match the 'y_gallery' labels by index.
         # Then, fit the classifier.
         x_gallery = scoring.stack(gallery_k_df)
@@ -76,8 +90,8 @@ def main(gallery_path: Path, samples_path: Path, output_path: Path, method: Dict
 
     # Store the results, tagged with the wildcard combination that produced them. Without the tag
     # the rows are indistinguishable once 'collect' concatenates every point of the experiment.
-    logger.info("Scored experiment", extra={**method, "folds": len(metrics)})
-    pd.DataFrame(metrics).assign(**method).to_parquet(output_path)
+    logger.info("Scored experiment", extra={**experiment, "folds": len(metrics)})
+    pd.DataFrame(metrics).assign(**experiment).to_parquet(output_path)
 
 
 if __name__ == "__main__":
@@ -90,7 +104,8 @@ if __name__ == "__main__":
         gallery_path=Path(snakemake.input.gallery_dataset),
         samples_path=Path(snakemake.input.samples_dataset),
         output_path=Path(snakemake.output.dataset),
-        method={
+        method=snakemake.wildcards.get("score_aggregation"),
+        experiment={
             "gallery_frame_anonymization": snakemake.wildcards.get("gallery_frame_anonymization"),
             "gallery_frame_aggregation": snakemake.wildcards.get("gallery_frame_aggregation"),
             "gallery_frame_embedding": snakemake.wildcards.get("gallery_frame_embedding"),
@@ -99,5 +114,6 @@ if __name__ == "__main__":
             "samples_frame_aggregation": snakemake.wildcards.get("samples_frame_aggregation"),
             "samples_frame_embedding": snakemake.wildcards.get("samples_frame_embedding"),
             "samples_embedding_aggregation": snakemake.wildcards.get("samples_embedding_aggregation"),
+            "score_aggregation": snakemake.wildcards.get("score_aggregation"),
         },
     )
