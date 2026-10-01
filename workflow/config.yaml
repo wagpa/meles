@@ -14,93 +14,29 @@ log_dir: logs
 split_k: 3
 split_shuffle: True
 
-# The experiment configuration. Both aggregators name a scope as well as a method. For
-# 'embedding_aggregator', 'video_*' aggregates the embeddings of one video and 'identity_*'
-# everything a fold holds of one identity. 'frame_aggregator' combines the pixels instead, before
-# the recognizer ever sees them, and only has the 'video' scope.
-# Fields the gallery leg does not name are inherited from the samples leg.
 experiment:
-  #name: arcface_against_clear_gallery
-  #samples:
-  #  frame_anonymizer:
-  #  - none
-  #  - gaussianblur
-  #  - blackbar
-  #  - pixelation
-  #  frame_recognizer: arcface
-  #  embedding_aggregator: video_none
-  #gallery:
-  #  frame_anonymizer:
-  #    - none
-  #  embedding_aggregator:
-  #    - video_none
-  #    - identity_pooling_mean
-  #    - identity_consensus_beta1
-  #    - identity_normweighted
-
-  #name: arcface_against_anonymized_gallery
-  #samples:
-  #  frame_anonymizer:
-  #  - none
-  #  - gaussianblur
-  #  - blackbar
-  #  - pixelation
-  #  frame_recognizer: arcface
-  #  embedding_aggregator: video_none
-  #gallery:
-  #  embedding_aggregator:
-  #    - video_none
-  #    - identity_pooling_mean
-  #    - identity_consensus_beta1
-  #    - identity_normweighted
-
-  #name: arcface_all_combinations
-  #samples:
-  #  frame_anonymizer:
-  #  - none
-  #  - gaussianblur
-  #  - blackbar
-  #  - pixelation
-  #  frame_aggregator: video_none
-  #  frame_recognizer: arcface
-  #  embedding_aggregator:
-  #    - video_none
-  #    - video_pooling_mean
-  #    - video_consensus_beta1
-  #    - video_normweighted
-  #gallery:
-  #  embedding_aggregator:
-  #    - video_none
-  #    - identity_pooling_mean
-  #    - identity_consensus_beta1
-  #    - identity_normweighted
-
-  #name: arcface_bicubic_against_clear_gallery
-  #samples:
-  #  frame_anonymizer:
-  #  - none
-  #  - gaussianblur
-  #  - blackbar
-  #  - pixelation
-  #  frame_aggregator:
-  #  - video_none
-  #  - video_frame_bicubic
-  #  frame_recognizer: arcface
-  #gallery:
-  #  frame_anonymizer: none
-  #  frame_aggregator: video_none
-  #  embedding_aggregator: video_normweighted
-
-  name: arcface_pix2pix_pixelation
+  # Fusion levels against a clear gallery. The samples leg deliberately does NOT aggregate embeddings, so that the
+  # 'score_aggregator' axis is the only thing fusing observations and 'max_none' is a genuine one-observation floor.
+  # The gallery leg varies only its cardinality (one row per frame vs one row per identity per fold), which is the
+  # comparison the 'max' gallery collapse was introduced to make fair.
+  # Grid: 4 samples x 2 gallery x 3 score = 24 scoring jobs, all over aggregate_embedding outputs that already exist.
+  name: arcface_fusion_levels
   samples:
     frame_anonymizer:
-    - pixelation
-    - blackbar
-    - gaussianblur
-    frame_aggregator:
-    - video_frame_pix2pix
+      - none
+      - gaussianblur
+      - blackbar
+      - pixelation
+    frame_aggregator: video_none
     frame_recognizer: arcface
+    embedding_aggregator: video_none
   gallery:
     frame_anonymizer: none
     frame_aggregator: video_none
-    embedding_aggregator: video_normweighted
+    embedding_aggregator:
+      - video_none
+      - identity_pooling_mean
+  score_aggregator:
+    - max_none
+    - max_mean
+    - max_max

@@ -38,7 +38,7 @@ class Experiment:
 def parse_experiment(spec: dict[str, Any]) -> Experiment:
     """Parse an experiment from a workflow config specification. The spec is flattened into the set of experiments."""
     name = spec["name"] or "unknown"
-    score_spec = spec["score_aggregator"] or SCORE_DEFAULT
+    score_spec = spec.get("score_aggregator") or SCORE_DEFAULT
 
     # Get the experiment legs, the gallery defaults to the samples. Each should be a dict of string(s).
     samples_spec = {**LEG_DEFAULTS, **spec["samples"]}

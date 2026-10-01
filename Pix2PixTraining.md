@@ -1,6 +1,6 @@
 # Configuring a pix2pix training run
 
-What each knob in `src/notebooks/08_train_pix2pix.ipynb` does, what it costs, and which ones are
+What each knob in `src/notebooks/01_train_pix2pix.ipynb` does, what it costs, and which ones are
 deviations from [what SEBA runs](FrameModel.md).
 
 ## The unit that matters is steps, not epochs

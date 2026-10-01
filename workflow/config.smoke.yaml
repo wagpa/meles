@@ -23,3 +23,9 @@ experiment:
     - video_none
     - video_pooling_mean
     - identity_pooling_mean
+  # '{gallery}_{samples}': how the gallery rows of one identity become its score, and how the
+  # observations of one query video become one decision. 'max_none' does not fuse at all and is the
+  # single-observation floor; 'max_mean' averages the observations of a video.
+  score_aggregator:
+  - max_none
+  - max_mean
