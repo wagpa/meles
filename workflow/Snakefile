@@ -142,7 +142,7 @@ rule aggregate_embedding:
 # matching its own, merely differently anonymized, copy in the gallery.
 # Input (gallery_dataset): identity (str), video (str), fold (int), embedding (float[])
 # Input (samples_dataset): identity (str), video (str), fold (int), embedding (float[])
-# Output: fold (int), top-1 (float), ..., gallery_frame_anonymization (str), ..., samples_embedding_aggregation (str)
+# Output: identity, video, observations, top-1, top-5, top-10, predicted, fold, ..., gallery_frame_anonymization (str), ..., samples_embedding_aggregation (str)
 rule score_experiment:
     input:
         gallery_dataset=RESULT_PATH / "aggregate_embedding/{gallery_frame_anonymization}/{gallery_frame_aggregation}/{gallery_frame_embedding}/{gallery_embedding_aggregation}/structure.parquet",
@@ -171,7 +171,7 @@ rule collect_recognition:
             samples_frame_aggregation=EXPERIMENT.samples.frame_aggregator,
             samples_frame_embedding=EXPERIMENT.samples.frame_recognizer,
             samples_embedding_aggregation=EXPERIMENT.samples.embedding_aggregator,
-            score_aggregation=EXPERIMENT.score_aggregation,
+            score_aggregation=EXPERIMENT.score_aggregator,
         ),
     output:
         dataset=RESULT_PATH / f"{EXPERIMENT.name}.parquet",
