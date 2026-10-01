@@ -2,6 +2,7 @@ import logging
 from pathlib import Path
 import pandas as pd
 from typing import TYPE_CHECKING, Dict
+import numpy as np
 
 from meles import scoring
 from meles.runtime import logs, runtime
@@ -58,6 +59,20 @@ def main(gallery_path: Path, samples_path: Path, output_path: Path, method: str,
 
         # TODO update from here with chosen method!
 
+        # Sort the dataframes by their groups
+        samples_k_df = samples_k_df.sort_values(by=["identity", "video"])
+        gallery_k_df = gallery_k_df.sort_values(by=["identity"])
+
+        # Get the samples and gallery embeddings as a matrix.
+        samples = np.vstack(samples_k_df["embedding"].to_numpy()).astype(float)
+        samples /= np.linalg.norm(samples, axis=1, keepdims=True)
+        gallery = np.vstack(gallery_k_df["embedding"].to_numpy()).astype(float)
+        gallery /= np.linalg.norm(gallery, axis=1, keepdims=True)
+
+        # TODO batch rows
+        gallery_identities = gallery_k_df["identity"].to_numpy()
+        gallery_id_uniq, gallery_id_starts = np.unique(gallery_identities, return_index=True)
+
         # 1. Calculate similarity matrix (chunked rows)
         # 2. Calculate max identity [rows] (bias: more identity frames increase high value chance)
         # 3. Calculate none/max/mean frame/video prediction [cols]
@@ -65,7 +80,7 @@ def main(gallery_path: Path, samples_path: Path, output_path: Path, method: str,
         # 5. Calculate accuracy per video (noop for already aggregated frames) [cols]
         # 6. (over all folds) Calculate avg accuracy per sample video (avg/std) [cols]
 
-        # TODO old stuff, ignore for now
+        # TODO old stuff, remove later
 
         # Collect the embeddings. They match the 'y_gallery' labels by index.
         # Then, fit the classifier.
