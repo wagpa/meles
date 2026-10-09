@@ -20,7 +20,56 @@ experiment:
   # The gallery leg varies only its cardinality (one row per frame vs one row per identity per fold), which is the
   # comparison the 'max' gallery collapse was introduced to make fair.
   # Grid: 4 samples x 2 gallery x 3 score = 24 scoring jobs, all over aggregate_embedding outputs that already exist.
-  name: arcface_fusion_levels
+  #name: arcface_fusion_levels
+  #samples:
+  #  frame_anonymizer:
+  #    - none
+  #    - gaussianblur
+  #    - blackbar
+  #    - pixelation
+  #  frame_aggregator: video_none
+  #  frame_recognizer: arcface
+  #  embedding_aggregator: video_none
+  #gallery:
+  #  frame_anonymizer: none
+  #  frame_aggregator: video_none
+  #  embedding_aggregator:
+  #    - video_none
+  #    - identity_pooling_mean
+  #score_aggregator:
+  #  - max_none
+  #  - max_mean
+  #  - max_max
+
+  #name: arcface_anonymizers_no_aggregation
+  #samples:
+  #  frame_anonymizer:
+  #    - none
+  #    - gaussianblur
+  #    - blackbar
+  #    - pixelation
+  #  frame_aggregator: video_none
+  #  frame_recognizer:
+  #    - arcface
+  #  embedding_aggregator: video_none
+  #gallery: {}
+  #score_aggregator:
+  #  - max_max
+  #name: sface_anonymizers_no_aggregation
+  #samples:
+  #  frame_anonymizer:
+  #    - none
+  #    - gaussianblur
+  #    - blackbar
+  #    - pixelation
+  #  frame_aggregator: video_none
+  #  frame_recognizer:
+  #    - sface
+  #  embedding_aggregator: video_none
+  #gallery: {}
+  #score_aggregator:
+  #  - max_max
+  name: ghostfacenet_anonymizers_no_aggregation
   samples:
     frame_anonymizer:
       - none
@@ -28,15 +77,9 @@ experiment:
       - blackbar
       - pixelation
     frame_aggregator: video_none
-    frame_recognizer: arcface
+    frame_recognizer:
+      - ghostfacenet
     embedding_aggregator: video_none
-  gallery:
-    frame_anonymizer: none
-    frame_aggregator: video_none
-    embedding_aggregator:
-      - video_none
-      - identity_pooling_mean
+  gallery: {}
   score_aggregator:
-    - max_none
-    - max_mean
     - max_max
