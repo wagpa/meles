@@ -1,4 +1,4 @@
-# Frame Aggregator
+# Frame Aggregator: Facial
 
 The goal is to train a model that can aggregate anonymized frames into a single clear frame that represents the identity.
 The resulting frame should be optimized to be recognized by arcface (or create an embedding of its own).
