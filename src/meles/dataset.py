@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 
 
-def read_dataset(path: Path) -> pd.DataFrame:
+def read_dataset(path: Path, root: Path | None = None) -> pd.DataFrame:
     """
     Reads the YouTube Faces dataset from the given path and returns a DataFrame containing the structure of the dataset.
     The DataFrame has an entry for every frame in the dataset in the format:
@@ -11,11 +11,19 @@ def read_dataset(path: Path) -> pd.DataFrame:
     - video: The name of the video containing the frame.
     - frame: The name of the frame file.
     - frame_suffix: The suffix of the frame file.
-    - path: The relative path of the frame file from the dataset path.
+    - path: The relative path of the frame file from ``root``.
 
-    :param path: The path to the dataset
+    ``path`` is where the ``identity/video/frame`` hierarchy starts, while ``root`` is what ``path`` is
+    reported relative to. The two differ because the dataset lives in a subdirectory of the data root
+    (``data/ytfaces``) but every consumer resolves ``path`` against the data root itself, so the column
+    has to keep the ``ytfaces/`` segment.
+
+    :param path: The path to the dataset, directly containing the identity directories
+    :param root: The path that ``path`` entries are relative to; defaults to ``path``
     :return: The DataFrame containing the structure of the dataset
     """
+
+    root = path if root is None else root
 
     _structure = []
     for identity_dir in path.iterdir():
@@ -41,7 +49,7 @@ def read_dataset(path: Path) -> pd.DataFrame:
                         "video": video_dir.name,
                         "frame": frame_file.name,
                         "frame_suffix": frame_file.suffix,
-                        "path": str(frame_file.relative_to(path)),
+                        "path": str(frame_file.relative_to(root)),
                     }
                 )
     return pd.DataFrame(_structure)
