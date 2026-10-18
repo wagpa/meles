@@ -23,25 +23,58 @@ Unlike pix2pix, this trains on the *same* dataset the experiment scores, because
 many frames of one person and that is what YouTube Faces has. The identity split below is what
 keeps that honest: hold identities out, not frames, or the decoder's prior contains the gallery --
 the trap ``meles.training.pairs`` avoids by training on CelebA instead.
+
+Also unlike pix2pix, **one model covers every anonymization** rather than one model per method.
+The methods are introduced as a curriculum -- clear frames first, then progressively harsher
+degradations -- because the hardest of them destroys the face outright: a model shown black bars
+from the first step has no signal to learn an identity from, while one that already reconstructs
+faces from blurred input has something to fall back on. :data:`CURRICULUM` is that order and
+:meth:`FacialFrames.set_stage` is what widens it between stages.
+
+A whole item shares one anonymization, drawn per identity rather than per frame. That matches how
+the experiment observes a condition -- a sweep leg pins one ``frame_anonymizer`` and every frame
+of it is anonymized the same way -- so an item of mixed methods is a distribution the model would
+never meet again at inference.
 """
 
 import logging
 import random
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pandas as pd
+import torch
 from torch import Tensor, stack
-from torch.utils.data import Dataset
+from torch.utils.data import DataLoader, Dataset
 
 from meles.anonymization import Anonymizer, resolve
 from meles.common import FacialArea, Image
 from meles.detection import TEMPLATE_SIZE, Detector, default_detector, prepare_face
-from meles.frame_aggregation.pix2pix import to_tensor
+from meles.frame_aggregation.facial import Facial
+from meles.frame_aggregation.pix2pix import default_device, to_tensor
 
 logger = logging.getLogger(__name__)
+
+# The two learning rates the encoder schedule uses: the decoder and the aggregator are trained from
+# scratch, while the encoder arrives pretrained and is only nudged, an order of magnitude slower.
+LEARNING_RATE = 1e-4
+ENCODER_LEARNING_RATE = 1e-5
+WEIGHT_DECAY = 5e-4
+
+# Bumped when the checkpoint layout changes, so an older file fails loudly rather than loading
+# into mismatched state dicts.
+CHECKPOINT_FORMAT = 1
+
+# The order the anonymizations are introduced in, easiest first. Stage 0 trains on 'none' alone,
+# which is the model learning to rebuild a face from several clear views of it before any of them
+# is degraded; each later stage keeps everything before it and adds one method. 'blackbar' is last
+# because it removes the face rather than obscuring it -- there is no inverse to learn, only a
+# prior over what the other frames imply, so it is the one that needs the earlier stages most.
+CURRICULUM: tuple[str, ...] = ("none", "gaussianblur", "pixelation", "blackbar")
 
 
 def split_identities(identities: Sequence[str], validation: float = 0.1, seed: int = 0) -> tuple[list[str], list[str]]:
@@ -64,12 +97,16 @@ def split_identities(identities: Sequence[str], validation: float = 0.1, seed: i
 
 class FacialFrames(Dataset):
     """
-    One item per identity: ``(anonymized, clear)`` where ``anonymized`` is ``(N, 3, size, size)``
-    and ``clear`` is ``(size, size)`` -- the order ``Facial.forward`` takes and the training loop
-    unpacks.
+    One item per identity: ``(anonymized, clear, method)`` where ``anonymized`` is
+    ``(N, 3, size, size)``, ``clear`` is ``(3, size, size)``, and ``method`` is the index into
+    :attr:`curriculum` of the anonymization this item was built with.
 
-    The default ``DataLoader`` collate stacks these into ``(B, N, 3, size, size)`` and
-    ``(B, 3, size, size)``, so no custom ``collate_fn`` is needed.
+    The default ``DataLoader`` collate stacks these into ``(B, N, 3, size, size)``,
+    ``(B, 3, size, size)`` and ``(B,)``, so no custom ``collate_fn`` is needed.
+
+    ``method`` indexes the **whole** curriculum, not the active prefix, so the same number means
+    the same anonymization at every stage. That is what makes a per-method loss comparable across
+    stages -- which is the number that says whether adding ``blackbar`` cost you ``gaussianblur``.
     """
 
     def __init__(
@@ -77,7 +114,8 @@ class FacialFrames(Dataset):
         structure: pd.DataFrame,
         targets: pd.DataFrame,
         root: Path,
-        anonymizer: str | Anonymizer,
+        curriculum: Sequence[str | Anonymizer] = CURRICULUM,
+        stage: int = 0,
         identities: Sequence[str] | None = None,
         frames: int = 8,
         size: int = TEMPLATE_SIZE,
@@ -85,6 +123,7 @@ class FacialFrames(Dataset):
         exclude_target_video: bool = True,
         flip: bool = True,
         deterministic: bool = False,
+        all_methods: bool = False,
         seed: int = 0,
     ):
         """
@@ -93,8 +132,11 @@ class FacialFrames(Dataset):
         :param targets: One row per identity, as ``data/ytfaces_targets.parquet`` holds it (see
             ``src/notebooks/07_target_selection.ipynb``): the frame the decoder should produce
         :param root: What the ``path`` column is relative to, i.e. the ``data`` directory
-        :param anonymizer: The anonymization to train against, a key in
-            ``meles.anonymization.ANONYMIZERS`` or an instance. One model is trained per method
+        :param curriculum: The anonymizations in the order they are introduced, each a key in
+            ``meles.anonymization.ANONYMIZERS`` or an instance. Pass a one-element sequence to
+            train against a single method and nothing else
+        :param stage: How far into the curriculum to start. Stage ``s`` draws uniformly from the
+            first ``s + 1`` methods; :meth:`set_stage` moves it
         :param identities: Which identities this split covers, from :func:`split_identities`.
             None uses every identity that has a target
         :param frames: How many anonymized frames make up one item, ``N``. Fixed, because a batch
@@ -108,19 +150,30 @@ class FacialFrames(Dataset):
         :param flip: Whether to mirror at random. One draw per item, applied to the target and all
             ``N`` inputs together -- mirroring only one end would ask the decoder for a face its
             inputs do not show
-        :param deterministic: Whether to draw the same frames and skip the flip every epoch. What
-            a *validation* split wants: a loss measured over freshly drawn frames each epoch is
-            not comparable between epochs
+        :param deterministic: Whether to draw the same frames, the same anonymization and no flip
+            every epoch. What a *validation* split wants: a loss measured over freshly drawn
+            frames each epoch is not comparable between epochs
+        :param all_methods: Whether to yield every identity under **every** active anonymization
+            instead of one drawn per identity, making the dataset ``identities x methods`` long.
+            The other half of what a validation split wants: drawing one method per identity
+            leaves the per-method counts to chance, and a method that happens to draw no items has
+            no loss at all. It also pairs the comparison -- every method sees the same identity on
+            the same frames, so a difference between two methods is the anonymization and nothing
+            else. Pointless for training, where the draw averages out over epochs
         :param seed: Seeds the per-item draw under ``deterministic``
         """
-        self.anonymizer = resolve(anonymizer) if isinstance(anonymizer, str) else anonymizer
-        self.name = anonymizer if isinstance(anonymizer, str) else type(anonymizer).__name__
+        self.curriculum = [resolve(entry) if isinstance(entry, str) else entry for entry in curriculum]
+        self.names = [entry if isinstance(entry, str) else type(entry).__name__ for entry in curriculum]
+        if not self.curriculum:
+            raise ValueError("The curriculum needs at least one anonymization")
+
         self.root = Path(root)
         self.frames = frames
         self.size = size
         self.detector = detector
         self.flip = flip
         self.deterministic = deterministic
+        self.all_methods = all_methods
         self.seed = seed
 
         self.target: dict[str, str] = dict(zip(targets["identity"], targets["path"]))
@@ -132,7 +185,7 @@ class FacialFrames(Dataset):
         target_path = set(self.target.values())
 
         self.pool: dict[str, list[str]] = {}
-        for identity, group in structure[structure["identity"].isin(wanted)].groupby("identity"):
+        for identity, group in structure[structure["identity"].isin(list(wanted))].groupby("identity"):
             if exclude_target_video:
                 group = group[group["video"] != target_video[identity]]
             paths = [str(path) for path in group["path"] if path not in target_path]
@@ -144,8 +197,11 @@ class FacialFrames(Dataset):
         if dropped:
             logger.warning(
                 "Identities have no input frames left and were dropped",
-                extra={"anonymizer": self.name, "dropped": len(dropped), "first": dropped[:5]},
+                extra={"dropped": len(dropped), "first": dropped[:5]},
             )
+
+        self.stage = 0
+        self.set_stage(stage)
 
         # Detection is otherwise repeated for every frame in every epoch. Filled lazily and held
         # per instance, so with 'num_workers > 0' each worker warms its own copy -- which only
@@ -154,7 +210,40 @@ class FacialFrames(Dataset):
         self.missing = 0
 
     def __len__(self) -> int:
-        return len(self.identities)
+        # Under 'all_methods' the dataset is one item per (identity, active method) pair, so it
+        # grows as the curriculum widens.
+        return len(self.identities) * (self.stage + 1 if self.all_methods else 1)
+
+    @property
+    def stages(self) -> int:
+        """How many stages the curriculum has, i.e. the last valid :attr:`stage` plus one."""
+        return len(self.curriculum)
+
+    @property
+    def active(self) -> list[str]:
+        """The names of the anonymizations currently being drawn from."""
+        return self.names[: self.stage + 1]
+
+    def set_stage(self, stage: int) -> list[str]:
+        """
+        Widen the dataset to the first ``stage + 1`` anonymizations.
+
+        Called between training stages. It mutates the dataset in place rather than building a new
+        one so that the detection cache below survives the widening -- but note that a
+        ``DataLoader`` with ``num_workers > 0`` hands each worker a *copy*, so a stage change made
+        after the loader was built will not reach the workers. Rebuild the loader, or set the
+        stage before the epoch that uses it.
+
+        :param stage: The index into the curriculum to widen to
+        :return: The names of the anonymizations now in play
+        :raises IndexError: If the stage is outside the curriculum
+        """
+        if not 0 <= stage < self.stages:
+            raise IndexError(f"Stage {stage} is outside a curriculum of {self.stages}: {self.names}")
+
+        self.stage = stage
+        logger.info("Curriculum stage set", extra={"stage": stage, "methods": ",".join(self.active)})
+        return self.active
 
     def read(self, path: str) -> Image:
         """
@@ -192,12 +281,13 @@ class FacialFrames(Dataset):
             return FacialArea(x=0, y=0, w=width, h=height)
         return area
 
-    def crop(self, path: str, anonymize: bool, flip: bool) -> Image:
+    def crop(self, path: str, method: int | None, flip: bool) -> Image:
         """
         One aligned crop, anonymized or clear.
 
         :param path: The frame to load
-        :param anonymize: Whether to anonymize the facial area first
+        :param method: The index into :attr:`curriculum` of the anonymization to apply, or None
+            to leave the frame clear -- which is what the target wants
         :param flip: Whether to mirror the crop
         :return: The crop, ``(size, size, 3)`` BGR uint8
         """
@@ -206,28 +296,470 @@ class FacialFrames(Dataset):
 
         # Anonymize at the frame's native resolution, then align: the other order would fit the
         # blur radius or the block size to a 112x112 crop the pipeline never produces.
-        image = self.anonymizer.apply(clear, area) if anonymize else clear
+        image = clear if method is None else self.curriculum[method].apply(clear, area)
         cropped = prepare_face(image, area, self.size)
         return np.ascontiguousarray(cropped[:, ::-1]) if flip else cropped
 
-    def __getitem__(self, index: int) -> tuple[Tensor, Tensor]:
+    def __getitem__(self, index: int) -> tuple[Tensor, Tensor, int]:
         """
-        :param index: The index into this split's identities
-        :return: The ``(anonymized, clear)`` item: ``(N, 3, size, size)`` and ``(3, size, size)``,
-            both RGB in [-1, 1]
+        :param index: The item index. Normally one per identity; under ``all_methods`` the
+            identities are laid out in blocks, one entry per active method within each
+        :return: The ``(anonymized, clear, method)`` item: ``(N, 3, size, size)`` and
+            ``(3, size, size)`` both RGB in [-1, 1], and the curriculum index of the
+            anonymization every one of the ``N`` frames was built with
         """
-        identity = self.identities[index]
+        # Under 'all_methods' the method comes from the index rather than a draw, and the frames
+        # are seeded by the *identity* -- so one identity's methods all see the same frames and
+        # differ only in how they were anonymized.
+        position, fixed = divmod(index, self.stage + 1) if self.all_methods else (index, None)
+        identity = self.identities[position]
         pool = self.pool[identity]
 
-        # Seeded by index under 'deterministic' so a validation item is the same every epoch.
+        # Seeded by position under 'deterministic' so a validation item is the same every epoch.
         # Otherwise drawn from the 'random' module, which a DataLoader reseeds per worker, so the
         # workers draw different frames instead of replaying one stream.
-        draw = random.Random(self.seed + index) if self.deterministic else random
+        draw = random.Random(self.seed + position) if self.deterministic else random
         # 'choices' rather than 'sample': an identity may hold fewer frames than N, and repeating
         # an observation is a truthful item -- the attacker simply saw less.
         chosen = draw.sample(pool, self.frames) if len(pool) >= self.frames else draw.choices(pool, k=self.frames)
 
+        # One anonymization for the whole item, uniform over the stages unlocked so far. Drawing
+        # per frame instead would build an item mixing methods, which no sweep leg ever produces.
+        method = draw.randrange(self.stage + 1) if fixed is None else fixed
+
         flip = self.flip and not self.deterministic and draw.random() > 0.5
-        anonymized = [to_tensor(self.crop(path, anonymize=True, flip=flip), self.size) for path in chosen]
-        clear = to_tensor(self.crop(self.target[identity], anonymize=False, flip=flip), self.size)
-        return stack(anonymized), clear
+        anonymized = [to_tensor(self.crop(path, method, flip), self.size) for path in chosen]
+        clear = to_tensor(self.crop(self.target[identity], None, flip), self.size)
+        return stack(anonymized), clear, method
+
+
+def l1_per_item(generated: Tensor, target: Tensor) -> Tensor:
+    """
+    Mean absolute reconstruction error, **per item** rather than reduced over the batch.
+
+    Everything downstream depends on this not reducing. A scalar loss cannot be split by
+    anonymization afterwards -- the batch has already been averaged over items that came from
+    different methods -- so the per-method breakdown has to start here.
+
+    :param generated: What the model produced, ``(B, 3, H, W)`` in [-1, 1]
+    :param target: The clear target, the same shape
+    :return: One loss per item, ``(B,)``
+    """
+    return (generated - target).abs().flatten(1).mean(dim=1)
+
+
+@dataclass(frozen=True)
+class Losses:
+    """
+    What one epoch cost: the mean reconstruction error overall, and split by anonymization.
+
+    **The split is the number a curriculum is steered by.** A single mean hides the thing worth
+    seeing -- whether unlocking ``blackbar`` bought its gain by giving up ``gaussianblur`` --
+    because the newly unlocked method is also the one dragging the mean up, so a rising total is
+    equally consistent with healthy progress and with quiet forgetting.
+
+    :param overall: The item-weighted mean over every method seen
+    :param per_method: The mean per anonymization, NaN for one that did not appear
+    :param counts: How many items each anonymization contributed, which is what says whether a
+        per-method number is worth reading
+    """
+
+    overall: float
+    per_method: dict[str, float]
+    counts: dict[str, int]
+
+    def describe(self, places: int = 4) -> str:
+        """A one-line summary, for a log line or a progress bar."""
+        seen = " ".join(f"{name}={value:.{places}f}" for name, value in self.per_method.items() if value == value)
+        return f"{self.overall:.{places}f} ({seen})" if seen else f"{self.overall:.{places}f}"
+
+
+class FacialTrainer:
+    """
+    A :class:`meles.frame_aggregation.facial.Facial` training run over the anonymization
+    curriculum: the model, its optimiser, its history and its checkpoint.
+
+    Two schedules run at once and they are independent, which is the easiest thing to confuse:
+
+    - the **curriculum** widens which anonymizations the data holds (:meth:`fit` walks it);
+    - the **encoder schedule** freezes the pretrained encoder and later fine-tunes it
+      (:meth:`set_encoder_frozen`).
+
+    Call ``fit`` once per encoder phase, not once per curriculum stage.
+    """
+
+    def __init__(
+        self,
+        model: Facial | None = None,
+        methods: Sequence[str] = CURRICULUM,
+        device: torch.device | str | None = None,
+        learning_rate: float = LEARNING_RATE,
+        encoder_learning_rate: float = ENCODER_LEARNING_RATE,
+        weight_decay: float = WEIGHT_DECAY,
+        criterion: Callable[[Tensor, Tensor], Tensor] = l1_per_item,
+        encoder_frozen: bool = True,
+    ):
+        """
+        :param model: The model to train, or None to build one conditioned on ``methods``
+        :param methods: The anonymization names, in curriculum order. Only used for labelling and
+            for sizing the conditioning; the dataset decides what is actually drawn
+        :param device: Where to train, defaulting to CUDA when there is one
+        :param learning_rate: The step size for the decoder and the aggregator, trained from
+            scratch
+        :param encoder_learning_rate: The step size for the pretrained encoder, used only once it
+            is unfrozen. An order of magnitude lower, because it arrives already trained
+        :param weight_decay: AdamW's decoupled weight decay
+        :param criterion: Maps ``(generated, target)`` to **one loss per item**. Swapping in an
+            identity loss -- cosine distance between recogniser embeddings of the two -- is the
+            obvious next step, since the experiment scores recognisability, not pixels
+        :param encoder_frozen: Whether to start with the encoder frozen, which is the first phase
+            of the encoder schedule
+        """
+        self.methods = list(methods)
+        self.model = model if model is not None else Facial(methods=len(self.methods))
+        self.device = torch.device(device) if device is not None else default_device()
+        self.model.to(self.device)
+
+        self.learning_rate = learning_rate
+        self.encoder_learning_rate = encoder_learning_rate
+        self.weight_decay = weight_decay
+        self.criterion = criterion
+
+        self.epoch = 0
+        self.stage = 0
+        self.history: dict[str, list[float]] = {key: [] for key in self._history_keys()}
+
+        self.optimizer: torch.optim.Optimizer
+        self.set_encoder_frozen(encoder_frozen)
+
+    def _history_keys(self) -> list[str]:
+        keys = ["stage", "train", "val"]
+        return keys + [f"{prefix}_{name}" for prefix in ("train", "val") for name in self.methods]
+
+    def set_encoder_frozen(self, frozen: bool) -> "FacialTrainer":
+        """
+        Switch the encoder between frozen and fine-tuned, rebuilding the optimiser for it.
+
+        The optimiser has to be rebuilt because the unfrozen encoder is a new parameter group at
+        its own learning rate. That discards AdamW's moment estimates, which is the intended
+        behaviour at a phase change -- the moments describe a loss surface that just moved.
+
+        :param frozen: Whether the encoder is frozen
+        :return: This trainer, for chaining
+        """
+        self.model.set_encoder_frozen(frozen)
+
+        groups: list[dict] = [{"params": self.model.train_parameters(), "lr": self.learning_rate}]
+        fine = self.model.fine_parameters()
+        if fine:
+            groups.append({"params": fine, "lr": self.encoder_learning_rate})
+
+        self.optimizer = torch.optim.AdamW(groups, weight_decay=self.weight_decay)
+        logger.info(
+            "Encoder schedule set",
+            extra={"frozen": frozen, "groups": len(groups), "fine_tuned": len(fine)},
+        )
+        return self
+
+    def _batch(self, batch: tuple[Tensor, Tensor, Tensor]) -> tuple[Tensor, Tensor, Tensor]:
+        anonymized, clear, method = batch
+        return (
+            anonymized.to(self.device, non_blocking=True),
+            clear.to(self.device, non_blocking=True),
+            method.to(self.device, non_blocking=True),
+        )
+
+    def step(self, anonymized: Tensor, clear: Tensor, method: Tensor) -> Tensor:
+        """
+        One optimiser step over a batch.
+
+        :param anonymized: ``(B, N, 3, H, W)``, the observations
+        :param clear: ``(B, 3, H, W)``, the targets
+        :param method: ``(B,)``, which anonymization each item carries
+        :return: The detached per-item losses, so the caller can split them by method
+        """
+        self.optimizer.zero_grad(set_to_none=True)
+        per_item = self.criterion(self.model(anonymized, method), clear)
+        per_item.mean().backward()
+        self.optimizer.step()
+        return per_item.detach()
+
+    def _totals(self) -> tuple[Tensor, Tensor]:
+        return torch.zeros(len(self.methods)), torch.zeros(len(self.methods))
+
+    @staticmethod
+    def _accumulate(sums: Tensor, counts: Tensor, per_item: Tensor, method: Tensor) -> None:
+        """Add a batch's per-item losses into the per-method running totals."""
+        index = method.detach().to("cpu", torch.long)
+        sums.index_add_(0, index, per_item.detach().to("cpu", torch.float32))
+        counts.index_add_(0, index, torch.ones_like(index, dtype=torch.float32))
+
+    def _losses(self, sums: Tensor, counts: Tensor) -> Losses:
+        per_method = {
+            name: float(sums[i] / counts[i]) if counts[i] else float("nan") for i, name in enumerate(self.methods)
+        }
+        total = float(counts.sum())
+        return Losses(
+            overall=float(sums.sum() / total) if total else float("nan"),
+            per_method=per_method,
+            counts={name: int(counts[i]) for i, name in enumerate(self.methods)},
+        )
+
+    @torch.no_grad()
+    def evaluate(self, loader: Iterable[tuple[Tensor, Tensor, Tensor]]) -> Losses:
+        """
+        The mean losses over a loader, split by anonymization, with nothing updated.
+
+        Runs in ``eval`` mode, and both halves of that matter. ``iresnet34`` carries BatchNorms,
+        whose running statistics are updated inside the forward pass whenever the module is in
+        ``train`` mode -- ``no_grad`` does not stop that -- so validating in ``train`` mode would
+        spend every epoch quietly fitting normalisation to held-out identities.
+
+        :param loader: Batches of ``(anonymized, clear, method)``
+        :return: The losses, overall and per method
+        """
+        was_training = self.model.training
+        self.model.eval()
+        try:
+            sums, counts = self._totals()
+            for batch in loader:
+                anonymized, clear, method = self._batch(batch)
+                per_item = self.criterion(self.model(anonymized, method), clear)
+                self._accumulate(sums, counts, per_item, method)
+        finally:
+            self.model.train(was_training)
+        return self._losses(sums, counts)
+
+    def train_epoch(
+        self, loader: Iterable[tuple[Tensor, Tensor, Tensor]], description: str = "", progress: bool = True
+    ) -> Losses:
+        """
+        One pass over the training loader.
+
+        :param loader: Batches of ``(anonymized, clear, method)``
+        :param description: What to label the progress bar with
+        :param progress: Whether to show a progress bar
+        :return: The training losses, overall and per method
+        """
+        from tqdm.auto import tqdm
+
+        self.model.train()
+        sums, counts = self._totals()
+        # 'mininterval' keeps the bar from writing megabytes of carriage returns into a log, the
+        # same reason the workflow scripts set it.
+        stepped = tqdm(loader, desc=description, mininterval=5.0) if progress else loader
+
+        for batch in stepped:
+            anonymized, clear, method = self._batch(batch)
+            self._accumulate(sums, counts, self.step(anonymized, clear, method), method)
+        return self._losses(sums, counts)
+
+    def fit(
+        self,
+        train_loader_for: Callable[[int], DataLoader],
+        validation_loader: Iterable[tuple[Tensor, Tensor, Tensor]] | None = None,
+        epochs_per_stage: int = 25,
+        stages: Sequence[int] | None = None,
+        checkpoint: str | Path | None = None,
+        on_epoch: Callable[["FacialTrainer", int], None] | None = None,
+        progress: bool = True,
+    ) -> dict[str, list[float]]:
+        """
+        Walk the curriculum, training ``epochs_per_stage`` epochs at each stage.
+
+        :param train_loader_for: Builds the training loader for a curriculum stage. A **factory**
+            rather than a loader because a ``DataLoader`` hands its workers a copy of the dataset
+            when its iterator is first made: widening the dataset in this process after that would
+            reach the parent and nothing else, and training would silently stay on the old stage
+        :param validation_loader: Held-out batches, or None to skip validation. Pin it to the
+            **last** stage so every method is measured from the first epoch -- otherwise a method
+            has no baseline to be compared against on the epoch it unlocks
+        :param epochs_per_stage: Epochs to train at each stage
+        :param stages: Which curriculum stages to run, defaulting to all of them in order
+        :param checkpoint: A file to write after every epoch, or None not to
+        :param on_epoch: Called with ``(trainer, epoch)`` after each epoch, for plotting samples
+        :param progress: Whether to show a per-epoch progress bar
+        :return: The full history, including any epochs from before this call
+        """
+        started = time.time()
+        schedule = list(range(len(self.methods))) if stages is None else list(stages)
+
+        for stage in schedule:
+            loader = train_loader_for(stage)
+            self.stage = stage
+            active = ", ".join(self.methods[: stage + 1])
+
+            for index in range(epochs_per_stage):
+                described = f"stage {stage} ({active}) epoch {index + 1}/{epochs_per_stage}"
+                training = self.train_epoch(loader, described, progress)
+                validation = (
+                    self.evaluate(validation_loader) if validation_loader is not None else self._losses(*self._totals())
+                )
+                self.epoch += 1
+
+                self.history["stage"].append(float(stage))
+                for prefix, losses in (("train", training), ("val", validation)):
+                    self.history[prefix].append(losses.overall)
+                    for name, value in losses.per_method.items():
+                        self.history[f"{prefix}_{name}"].append(value)
+
+                logger.info(
+                    "Trained epoch",
+                    extra={
+                        "epoch": self.epoch,
+                        "stage": stage,
+                        "active": active,
+                        "train": round(training.overall, 5),
+                        "val": round(validation.overall, 5),
+                        **{f"val_{name}": round(value, 5) for name, value in validation.per_method.items()},
+                    },
+                )
+
+                if checkpoint is not None:
+                    self.save(checkpoint)
+                if on_epoch is not None:
+                    on_epoch(self, self.epoch)
+
+        logger.info(
+            "Training completed",
+            extra={"epochs": self.epoch, "stages": len(schedule), "seconds": round(time.time() - started, 1)},
+        )
+        return self.history
+
+    def state(self, inference_only: bool = False) -> dict:
+        """
+        :param inference_only: Whether to leave the optimiser out. AdamW keeps two moment
+            estimates per parameter, so dropping them is most of the file -- but what is left
+            cannot be resumed, only run
+        :return: Everything needed to resume this run, or to run it
+        """
+        state = {
+            "format": CHECKPOINT_FORMAT,
+            "model": self.model.state_dict(),
+            "epoch": self.epoch,
+            "stage": self.stage,
+            "methods": self.methods,
+            "encoder_frozen": self.model.encoder_frozen,
+            "history": self.history,
+        }
+        if not inference_only:
+            state["optimizer"] = self.optimizer.state_dict()
+        return state
+
+    def save(self, path: str | Path, inference_only: bool = False) -> Path:
+        """
+        Write a checkpoint.
+
+        Written to a temporary file and renamed, because a run interrupted while overwriting the
+        previous epoch's checkpoint would otherwise leave neither a complete old one nor a
+        complete new one.
+
+        :param path: The file to write; its directory is created if needed
+        :param inference_only: Whether to drop the optimiser state, which is roughly two thirds
+            of the file but makes it unresumable
+        :return: The path written
+        """
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        torch.save(self.state(inference_only), temporary)
+        temporary.replace(path)
+        return path
+
+    def load(self, path: str | Path) -> "FacialTrainer":
+        """
+        Restore a checkpoint written by :meth:`save`.
+
+        :param path: The file to read
+        :return: This trainer
+        :raises ValueError: If the file was written by a different checkpoint format, or for a
+            different set of anonymizations
+        """
+        payload = torch.load(Path(path), map_location=self.device, weights_only=False)
+
+        if payload.get("format") != CHECKPOINT_FORMAT:
+            raise ValueError(f"Checkpoint format {payload.get('format')!r}, expected {CHECKPOINT_FORMAT}")
+        if list(payload["methods"]) != self.methods:
+            raise ValueError(f"Checkpoint covers {payload['methods']}, this trainer covers {self.methods}")
+
+        # The encoder phase decides the optimiser's parameter groups, so it has to be restored
+        # before the optimiser state is loaded into them.
+        self.set_encoder_frozen(bool(payload["encoder_frozen"]))
+        self.model.load_state_dict(payload["model"])
+        if "optimizer" in payload:
+            self.optimizer.load_state_dict(payload["optimizer"])
+        else:
+            logger.warning(
+                "Checkpoint holds no optimiser state, so training restarts from fresh moments",
+                extra={"epoch": payload["epoch"]},
+            )
+        self.epoch = int(payload["epoch"])
+        self.stage = int(payload["stage"])
+        self.history = {key: list(values) for key, values in payload["history"].items()}
+        return self
+
+
+def load_facial(path: str | Path, device: torch.device | str | None = None) -> tuple[Facial, dict]:
+    """
+    Load a trained model for inference, without building a trainer around it.
+
+    :param path: A checkpoint written by :meth:`FacialTrainer.save`, with or without optimiser
+        state
+    :param device: Where to put the model, defaulting to CUDA when there is one
+    :return: The model in ``eval`` mode, and the checkpoint's metadata minus the tensors --
+        ``epoch``, ``stage``, ``methods`` and ``history``
+    :raises ValueError: If the file was written by a different checkpoint format
+    """
+    where = torch.device(device) if device is not None else default_device()
+    payload = torch.load(Path(path), map_location=where, weights_only=False)
+
+    if payload.get("format") != CHECKPOINT_FORMAT:
+        raise ValueError(f"Checkpoint format {payload.get('format')!r}, expected {CHECKPOINT_FORMAT}")
+
+    methods = list(payload["methods"])
+    model = Facial(methods=len(methods))
+    model.load_state_dict(payload["model"])
+    model.to(where).eval()
+
+    metadata = {key: payload[key] for key in ("epoch", "stage", "methods", "history") if key in payload}
+    return model, metadata
+
+
+@torch.no_grad()
+def reconstruct(
+    model: Facial,
+    anonymized: Tensor,
+    method: Tensor | int | None = None,
+    device: torch.device | str | None = None,
+) -> Tensor:
+    """
+    Run observations through a trained model and get the faces back.
+
+    Always runs in ``eval`` mode: ``iresnet34``'s BatchNorms otherwise normalise by the batch in
+    front of them, so the same identity would reconstruct differently depending on which other
+    identities happened to share its batch.
+
+    :param model: A trained :class:`meles.frame_aggregation.facial.Facial`
+    :param anonymized: ``(B, N, 3, H, W)`` observations, or ``(N, 3, H, W)`` for a single item
+    :param method: Which anonymization the observations carry -- a ``(B,)`` tensor, one int for
+        the whole batch, or None for a model trained without conditioning
+    :param device: Where to run, defaulting to wherever the model already is
+    :return: The reconstructions, ``(B, 3, H, W)`` in [-1, 1], on the CPU
+    """
+    where = torch.device(device) if device is not None else next(model.parameters()).device
+    batched = anonymized if anonymized.dim() == 5 else anonymized.unsqueeze(0)
+    batched = batched.to(where)
+
+    if isinstance(method, int):
+        method = torch.full((batched.shape[0],), method, dtype=torch.long)
+    if method is not None:
+        method = method.to(where)
+        if method.dim() == 0:
+            method = method.expand(batched.shape[0])
+
+    was_training = model.training
+    model.eval()
+    try:
+        return model(batched, method).cpu()
+    finally:
+        model.train(was_training)

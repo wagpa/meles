@@ -8,14 +8,24 @@ aggregators, in ``meles.frame_aggregation.pix2pix``; what lives here is the corp
 the pairing of clear and anonymized images, and the loop that consumes it.
 """
 
-from meles.training.facial import FacialFrames, split_identities
+from meles.training.facial import (
+    CURRICULUM,
+    FacialFrames,
+    FacialTrainer,
+    l1_per_item,
+    split_identities,
+)
+from meles.training.facial import Losses as FacialLosses
 from meles.training.pairs import AnonymizedPairs, as_image, augment, augmentation_params
 from meles.training.pix2pix import Losses, Pix2PixTrainer, checkpoint_path, default_device
 from meles.training.sources import ImageArchive, ImageDirectory, ImageSource, Slice, split
 
 __all__ = [
+    "CURRICULUM",
     "AnonymizedPairs",
     "FacialFrames",
+    "FacialLosses",
+    "FacialTrainer",
     "ImageArchive",
     "ImageDirectory",
     "ImageSource",
@@ -27,6 +37,7 @@ __all__ = [
     "augmentation_params",
     "checkpoint_path",
     "default_device",
+    "l1_per_item",
     "split",
     "split_identities",
 ]
