@@ -159,15 +159,17 @@ def test_evaluate_runs_in_eval_mode():
 def test_step_reduces_the_loss_on_a_repeated_batch():
     run = trainer()
     anonymized, clear, method = batch([0, 1, 2, 3])
-    first = run.step(anonymized, clear, method).mean()
+    first = run.step(anonymized, clear, method)[0].mean()
     for _ in range(25):
         run.step(anonymized, clear, method)
-    assert run.step(anonymized, clear, method).mean() < first
+    assert run.step(anonymized, clear, method)[0].mean() < first
 
 
 def test_step_returns_one_loss_per_item():
     run = trainer()
-    assert run.step(*batch([0, 2, 3])).shape == (3,)
+    total, terms = run.step(*batch([0, 2, 3]))
+    assert total.shape == (3,)
+    assert all(value.shape == (3,) for value in terms.values())
 
 
 def test_freezing_rebuilds_the_optimiser_groups():
@@ -334,3 +336,143 @@ def test_reconstruct_broadcasts_an_int_method_over_the_batch():
     by_int = reconstruct(run.model, anonymized, 2)
     by_tensor = reconstruct(run.model, anonymized, torch.tensor([2, 2, 2]))
     assert torch.allclose(by_int, by_tensor)
+
+
+class TinyBackbone(nn.Module):
+    """Returns (embedding, hidden) as IResNet.forward does."""
+
+    def __init__(self, dim=16):
+        super().__init__()
+        self.fc = nn.Linear(CHANNELS * SIZE * SIZE, dim)
+
+    def forward(self, x):
+        return self.fc(x.flatten(1)), x
+
+
+class TinyEncoder(nn.Module):
+    """Stands in for FacialEncoder, which wraps the backbone as '.model'."""
+
+    def __init__(self, dim=16):
+        super().__init__()
+        self.model = TinyBackbone(dim)
+
+    def forward(self, x):
+        return self.model(x)[1]
+
+
+def identity_loss():
+    from meles.training.facial import IdentityLoss
+
+    return IdentityLoss(encoder=TinyEncoder())
+
+
+def test_identity_loss_is_zero_for_an_exact_reconstruction():
+    """1 - cos of a vector with itself is 0, whatever the encoder is."""
+    loss = identity_loss()
+    target = torch.rand(3, CHANNELS, SIZE, SIZE) * 2 - 1
+    assert torch.allclose(loss(target, target), torch.zeros(3), atol=1e-5)
+
+
+def test_identity_loss_is_per_item_and_in_range():
+    loss = identity_loss()
+    generated = torch.rand(4, CHANNELS, SIZE, SIZE) * 2 - 1
+    target = torch.rand(4, CHANNELS, SIZE, SIZE) * 2 - 1
+    values = loss(generated, target)
+    assert values.shape == (4,)
+    assert float(values.min()) >= -1e-5 and float(values.max()) <= 2.0 + 1e-5
+
+
+def test_identity_loss_punishes_the_average_face():
+    """The failure L1 rewards: one hedged output for everyone must score worse than the truth."""
+    loss = identity_loss()
+    targets = torch.rand(6, CHANNELS, SIZE, SIZE) * 2 - 1
+    average = targets.mean(dim=0, keepdim=True).expand_as(targets)
+    assert float(loss(average, targets).mean()) > float(loss(targets, targets).mean())
+
+
+def test_identity_loss_backpropagates_to_the_generated_image():
+    loss = identity_loss()
+    generated = (torch.rand(2, CHANNELS, SIZE, SIZE) * 2 - 1).requires_grad_(True)
+    target = torch.rand(2, CHANNELS, SIZE, SIZE) * 2 - 1
+    loss(generated, target).mean().backward()
+    assert generated.grad is not None and float(generated.grad.abs().sum()) > 0
+
+
+def test_the_identity_critic_is_frozen_and_stays_in_eval():
+    """A critic that trains would be grading itself; one in train mode would drift its BatchNorms."""
+    loss = identity_loss()
+    assert not any(p.requires_grad for p in loss.encoder.parameters())
+    loss.train(True)
+    assert not loss.encoder.training
+
+
+def test_the_critic_takes_no_gradient_from_the_loss():
+    loss = identity_loss()
+    generated = (torch.rand(2, CHANNELS, SIZE, SIZE) * 2 - 1).requires_grad_(True)
+    loss(generated, torch.rand(2, CHANNELS, SIZE, SIZE) * 2 - 1).mean().backward()
+    assert all(p.grad is None for p in loss.encoder.parameters())
+
+
+def test_weighted_criterion_returns_weighted_contributions():
+    from meles.training.facial import WeightedCriterion
+
+    criterion = WeightedCriterion({"a": (2.0, l1_per_item), "b": (0.5, l1_per_item)})
+    generated = torch.zeros(3, CHANNELS, SIZE, SIZE)
+    target = torch.full((3, CHANNELS, SIZE, SIZE), 0.4)
+    terms = criterion(generated, target)
+
+    assert set(terms) == {"a", "b"}
+    assert torch.allclose(terms["a"], torch.full((3,), 0.8))
+    assert torch.allclose(terms["b"], torch.full((3,), 0.2))
+
+
+def test_an_empty_criterion_is_refused():
+    from meles.training.facial import WeightedCriterion
+
+    with pytest.raises(ValueError):
+        WeightedCriterion({})
+
+
+def test_the_trainer_backpropagates_the_weighted_sum():
+    from meles.training.facial import WeightedCriterion
+
+    run = trainer(criterion=WeightedCriterion({"a": (1.0, l1_per_item), "b": (3.0, l1_per_item)}))
+    total, terms = run.step(*batch([0, 1]))
+    assert set(terms) == {"a", "b"}
+    assert torch.allclose(total, terms["a"] + terms["b"])
+    assert torch.allclose(terms["b"], 3.0 * terms["a"])
+
+
+def test_losses_split_by_term_as_well_as_by_method():
+    from meles.training.facial import WeightedCriterion
+
+    run = trainer(criterion=WeightedCriterion({"l1": (1.0, l1_per_item), "twice": (2.0, l1_per_item)}))
+    losses = run.evaluate([batch([0, 3])])
+
+    assert set(losses.per_term) == {"l1", "twice"}
+    assert losses.per_term["twice"] == pytest.approx(2 * losses.per_term["l1"], rel=1e-4)
+    assert losses.overall == pytest.approx(losses.per_term["l1"] + losses.per_term["twice"], rel=1e-4)
+    # And each term is still split by anonymization.
+    assert set(losses.per_term_method["l1"]) == set(CURRICULUM)
+    assert losses.per_term_method["l1"]["none"] == losses.per_term_method["l1"]["none"]
+
+
+def test_history_records_a_series_per_term_and_method():
+    from meles.training.facial import WeightedCriterion
+
+    run = trainer(criterion=WeightedCriterion({"l1": (1.0, l1_per_item), "id": (0.5, l1_per_item)}))
+    history = run.fit(lambda s: [batch([0, 1])], [batch([0, 1, 2, 3])], epochs_per_stage=2, stages=[1], progress=False)
+
+    assert len(history["val:l1"]) == 2
+    assert len(history["val:id_blackbar"]) == 2
+    assert len(history["train:l1_none"]) == 2
+    # Every series lines up with the epoch axis.
+    assert all(len(values) == 2 for key, values in history.items() if key.startswith(("train:", "val:")))
+
+
+def test_a_plain_tensor_criterion_still_works():
+    """The single-tensor contract must keep working; it is the default."""
+    run = trainer(criterion=l1_per_item)
+    total, terms = run.step(*batch([0]))
+    assert list(terms) == ["loss"]
+    assert torch.allclose(total, terms["loss"])

@@ -41,20 +41,21 @@ import logging
 import random
 import time
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pandas as pd
 import torch
-from torch import Tensor, stack
+import torch.nn.functional as fun
+from torch import Tensor, nn, stack
 from torch.utils.data import DataLoader, Dataset
 
 from meles.anonymization import Anonymizer, resolve
 from meles.common import FacialArea, Image
 from meles.detection import TEMPLATE_SIZE, Detector, default_detector, prepare_face
-from meles.frame_aggregation.facial import Facial
+from meles.frame_aggregation.facial import Facial, FacialEncoder
 from meles.frame_aggregation.pix2pix import default_device, to_tensor
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,12 @@ logger = logging.getLogger(__name__)
 LEARNING_RATE = 1e-4
 ENCODER_LEARNING_RATE = 1e-5
 WEIGHT_DECAY = 5e-4
+
+# The weight on the identity term next to an L1 of 1.0. Chosen so the two start out comparable in
+# magnitude rather than by tuning: on the L1-only run the reconstruction error settled near 0.33,
+# while '1 - cos' between two unrelated faces is close to 1.0. Worth sweeping -- it is the dial
+# that decides whether the model prefers a sharp face or the right one.
+IDENTITY_WEIGHT = 0.3
 
 # Bumped when the checkpoint layout changes, so an older file fails loudly rather than loading
 # into mismatched state dicts.
@@ -75,6 +82,10 @@ CHECKPOINT_FORMAT = 1
 # because it removes the face rather than obscuring it -- there is no inverse to learn, only a
 # prior over what the other frames imply, so it is the one that needs the earlier stages most.
 CURRICULUM: tuple[str, ...] = ("none", "gaussianblur", "pixelation", "blackbar")
+
+# A criterion maps (generated, target) to either one per-item loss, or named per-item
+# weighted contributions as 'WeightedCriterion' does. The trainer accepts both.
+Criterion = Callable[[Tensor, Tensor], "Tensor | dict[str, Tensor]"]
 
 
 def split_identities(identities: Sequence[str], validation: float = 0.1, seed: int = 0) -> tuple[list[str], list[str]]:
@@ -348,30 +359,152 @@ def l1_per_item(generated: Tensor, target: Tensor) -> Tensor:
     return (generated - target).abs().flatten(1).mean(dim=1)
 
 
+class IdentityLoss(nn.Module):
+    """
+    Cosine distance between a recogniser's embeddings of the reconstruction and of the target:
+    ``1 - cos``, per item, in [0, 2].
+
+    This is the loss the experiment's question actually asks. L1 asks for the right *pixels*, and
+    its cheapest answer under uncertainty is the conditional median -- a blurry average face,
+    which has low error against everyone and identifies as no one. Measured on a 125-epoch L1-only
+    run, the per-method validation loss came out *inverted*: ``blackbar`` scored better than
+    ``none``, because the less the model could see, the harder it hedged towards that mean face.
+    A recogniser is not fooled by the average face, so this term removes that incentive.
+
+    The critic is a **separate frozen copy** of the recogniser, never the encoder inside
+    ``Facial``. Two reasons, and the second is the dangerous one:
+
+    - the encoder is fine-tuned in the second phase, so a shared critic could be satisfied by
+      moving the encoder rather than by improving the image -- the loss would be grading itself;
+    - a critic whose weights drift means something different each epoch, so its numbers would not
+      be comparable across a run.
+
+    ``iresnet34`` is used because it is the only **differentiable** recogniser here: ``ArcFace``
+    (``w600k_r50``), ``SFace`` and ``GhostFaceNet`` are ONNX, and ONNX Runtime carries no
+    gradients. That is also the better arrangement -- ``w600k_r50`` is what
+    ``meles.frame_embedder.models.ARCFACE`` scores the experiment with, so optimising against it
+    directly would be training on the evaluation metric.
+    """
+
+    def __init__(self, weights: str | Path | None = None, encoder: FacialEncoder | None = None):
+        """
+        :param weights: The recogniser weights, e.g. ``models/iresnet34.pth``. Ignored when
+            ``encoder`` is given
+        :param encoder: An already-built encoder to copy the critic from, for tests or to avoid
+            reading the same file twice
+        """
+        super().__init__()
+        self.encoder = encoder if encoder is not None else FacialEncoder(weights=weights)
+        for parameter in self.encoder.parameters():
+            parameter.requires_grad_(False)
+        self.encoder.eval()
+
+    def train(self, mode: bool = True) -> "IdentityLoss":
+        """Pins the critic to ``eval``. Its BatchNorms must never move; see the class docstring."""
+        super().train(mode)
+        self.encoder.eval()
+        return self
+
+    def embed(self, images: Tensor) -> Tensor:
+        """
+        :param images: ``(B, 3, 112, 112)`` in [-1, 1] RGB, which is what ``to_tensor`` produces
+            and what the recogniser was trained on -- so no renormalisation is needed
+        :return: The L2-normalised ``(B, 512)`` embeddings
+        """
+        # Index 0 is the 512-d embedding; index 1 is the 7x7 feature map 'FacialEncoder.forward'
+        # returns for the decoder. The identity lives in the former.
+        return fun.normalize(self.encoder.model(images)[0], dim=1)
+
+    def forward(self, generated: Tensor, target: Tensor) -> Tensor:
+        """
+        :param generated: What the model produced, ``(B, 3, 112, 112)`` in [-1, 1]
+        :param target: The clear target, the same shape
+        :return: ``1 - cos`` per item, ``(B,)``
+        """
+        # The target's embedding is a constant: no gradient flows to it, and computing it under
+        # 'no_grad' keeps the critic's activations off the tape.
+        with torch.no_grad():
+            wanted = self.embed(target)
+        return 1.0 - (self.embed(generated) * wanted).sum(dim=1)
+
+
+class WeightedCriterion:
+    """
+    Several per-item losses, summed with weights.
+
+    Returns the **weighted** contributions per term rather than one number, so the trainer can
+    both backpropagate their sum and report them apart. Reporting them apart is the point: a
+    falling total tells you nothing about whether it fell because the faces got sharper or because
+    they got more recognisable, and those are the two things being traded against each other.
+    """
+
+    def __init__(self, terms: dict[str, tuple[float, Callable[[Tensor, Tensor], Tensor]]]):
+        """
+        :param terms: Name to ``(weight, loss)``, where each loss returns one value per item::
+
+                WeightedCriterion({
+                    "l1": (1.0, l1_per_item),
+                    "identity": (IDENTITY_WEIGHT, IdentityLoss("models/iresnet34.pth")),
+                })
+
+        :raises ValueError: If no terms are given
+        """
+        if not terms:
+            raise ValueError("A criterion needs at least one term")
+        self.terms = dict(terms)
+
+    def to(self, device: torch.device | str) -> "WeightedCriterion":
+        """Move any term that is a module -- the identity loss carries a network."""
+        for weight, loss in self.terms.values():
+            if isinstance(loss, nn.Module):
+                loss.to(device)
+        return self
+
+    def __call__(self, generated: Tensor, target: Tensor) -> dict[str, Tensor]:
+        """
+        :param generated: What the model produced, ``(B, 3, H, W)``
+        :param target: The clear target, the same shape
+        :return: Each term's **weighted** per-item contribution, ``(B,)`` apiece
+        """
+        return {name: weight * loss(generated, target) for name, (weight, loss) in self.terms.items()}
+
+
 @dataclass(frozen=True)
 class Losses:
     """
-    What one epoch cost: the mean reconstruction error overall, and split by anonymization.
+    What one epoch cost: the mean error overall, split by anonymization, and split by loss term.
 
-    **The split is the number a curriculum is steered by.** A single mean hides the thing worth
-    seeing -- whether unlocking ``blackbar`` bought its gain by giving up ``gaussianblur`` --
-    because the newly unlocked method is also the one dragging the mean up, so a rising total is
-    equally consistent with healthy progress and with quiet forgetting.
+    **The per-method split is the number a curriculum is steered by.** A single mean hides the
+    thing worth seeing -- whether unlocking ``blackbar`` bought its gain by giving up
+    ``gaussianblur`` -- because the newly unlocked method is also the one dragging the mean up, so
+    a rising total is equally consistent with healthy progress and with quiet forgetting.
+
+    **The per-term split is what a weighted criterion needs.** ``l1`` and ``identity`` pull in
+    different directions -- a blurry average face is good L1 and terrible identity -- so the total
+    alone cannot say which one moved.
 
     :param overall: The item-weighted mean over every method seen
     :param per_method: The mean per anonymization, NaN for one that did not appear
     :param counts: How many items each anonymization contributed, which is what says whether a
         per-method number is worth reading
+    :param per_term: Each term's weighted mean, over everything
+    :param per_term_method: Each term's weighted mean, split by anonymization
     """
 
     overall: float
     per_method: dict[str, float]
     counts: dict[str, int]
+    per_term: dict[str, float] = field(default_factory=dict)
+    per_term_method: dict[str, dict[str, float]] = field(default_factory=dict)
 
     def describe(self, places: int = 4) -> str:
         """A one-line summary, for a log line or a progress bar."""
         seen = " ".join(f"{name}={value:.{places}f}" for name, value in self.per_method.items() if value == value)
-        return f"{self.overall:.{places}f} ({seen})" if seen else f"{self.overall:.{places}f}"
+        terms = " ".join(f"{name}={value:.{places}f}" for name, value in self.per_term.items())
+        described = f"{self.overall:.{places}f}"
+        if terms:
+            described += f" [{terms}]"
+        return f"{described} ({seen})" if seen else described
 
 
 class FacialTrainer:
@@ -396,7 +529,7 @@ class FacialTrainer:
         learning_rate: float = LEARNING_RATE,
         encoder_learning_rate: float = ENCODER_LEARNING_RATE,
         weight_decay: float = WEIGHT_DECAY,
-        criterion: Callable[[Tensor, Tensor], Tensor] = l1_per_item,
+        criterion: Criterion = l1_per_item,
         encoder_frozen: bool = True,
     ):
         """
@@ -424,6 +557,9 @@ class FacialTrainer:
         self.encoder_learning_rate = encoder_learning_rate
         self.weight_decay = weight_decay
         self.criterion = criterion
+        # The identity term carries a network of its own, which has to follow the model.
+        if isinstance(criterion, WeightedCriterion | nn.Module):
+            criterion.to(self.device)
 
         self.epoch = 0
         self.stage = 0
@@ -435,6 +571,17 @@ class FacialTrainer:
     def _history_keys(self) -> list[str]:
         keys = ["stage", "train", "val"]
         return keys + [f"{prefix}_{name}" for prefix in ("train", "val") for name in self.methods]
+
+    def _record(self, key: str, value: float) -> None:
+        """
+        Append to a history series, creating it if this is the first epoch that produced it.
+
+        A new series is back-filled with NaN so that every series has one entry per epoch and
+        plotting them against a shared epoch axis lines up.
+        """
+        series = self.history.setdefault(key, [float("nan")] * (self.epoch - 1))
+        series.extend([float("nan")] * (self.epoch - 1 - len(series)))
+        series.append(value)
 
     def set_encoder_frozen(self, frozen: bool) -> "FacialTrainer":
         """
@@ -469,20 +616,35 @@ class FacialTrainer:
             method.to(self.device, non_blocking=True),
         )
 
-    def step(self, anonymized: Tensor, clear: Tensor, method: Tensor) -> Tensor:
+    def _apply(self, generated: Tensor, clear: Tensor) -> tuple[Tensor, dict[str, Tensor]]:
+        """
+        Run the criterion, accepting either contract.
+
+        A criterion may return one per-item tensor, or a dict of named per-item **weighted**
+        contributions as :class:`WeightedCriterion` does. The sum is what gets backpropagated
+        either way; the terms are only carried along so they can be reported apart.
+
+        :return: The per-item total and the per-item terms
+        """
+        result = self.criterion(generated, clear)
+        terms = {"loss": result} if isinstance(result, Tensor) else result
+        return torch.stack(list(terms.values())).sum(dim=0), terms
+
+    def step(self, anonymized: Tensor, clear: Tensor, method: Tensor) -> tuple[Tensor, dict[str, Tensor]]:
         """
         One optimiser step over a batch.
 
         :param anonymized: ``(B, N, 3, H, W)``, the observations
         :param clear: ``(B, 3, H, W)``, the targets
         :param method: ``(B,)``, which anonymization each item carries
-        :return: The detached per-item losses, so the caller can split them by method
+        :return: The detached per-item totals and per-item terms, so the caller can split both
+            by method
         """
         self.optimizer.zero_grad(set_to_none=True)
-        per_item = self.criterion(self.model(anonymized, method), clear)
-        per_item.mean().backward()
+        total, terms = self._apply(self.model(anonymized, method), clear)
+        total.mean().backward()
         self.optimizer.step()
-        return per_item.detach()
+        return total.detach(), {name: value.detach() for name, value in terms.items()}
 
     def _totals(self) -> tuple[Tensor, Tensor]:
         return torch.zeros(len(self.methods)), torch.zeros(len(self.methods))
@@ -494,15 +656,25 @@ class FacialTrainer:
         sums.index_add_(0, index, per_item.detach().to("cpu", torch.float32))
         counts.index_add_(0, index, torch.ones_like(index, dtype=torch.float32))
 
-    def _losses(self, sums: Tensor, counts: Tensor) -> Losses:
-        per_method = {
-            name: float(sums[i] / counts[i]) if counts[i] else float("nan") for i, name in enumerate(self.methods)
-        }
+    def _accumulate_terms(self, term_sums: dict[str, Tensor], terms: dict[str, Tensor], method: Tensor) -> None:
+        """The same, per loss term. The counts are shared, so only the sums are kept apart."""
+        ignored = torch.zeros(len(self.methods))
+        for name, value in terms.items():
+            running = term_sums.setdefault(name, torch.zeros(len(self.methods)))
+            self._accumulate(running, ignored, value, method)
+
+    def _mean_by_method(self, sums: Tensor, counts: Tensor) -> dict[str, float]:
+        return {name: float(sums[i] / counts[i]) if counts[i] else float("nan") for i, name in enumerate(self.methods)}
+
+    def _losses(self, sums: Tensor, counts: Tensor, terms: dict[str, Tensor] | None = None) -> Losses:
         total = float(counts.sum())
+        terms = terms or {}
         return Losses(
             overall=float(sums.sum() / total) if total else float("nan"),
-            per_method=per_method,
+            per_method=self._mean_by_method(sums, counts),
             counts={name: int(counts[i]) for i, name in enumerate(self.methods)},
+            per_term={name: float(value.sum() / total) if total else float("nan") for name, value in terms.items()},
+            per_term_method={name: self._mean_by_method(value, counts) for name, value in terms.items()},
         )
 
     @torch.no_grad()
@@ -522,13 +694,15 @@ class FacialTrainer:
         self.model.eval()
         try:
             sums, counts = self._totals()
+            term_sums: dict[str, Tensor] = {}
             for batch in loader:
                 anonymized, clear, method = self._batch(batch)
-                per_item = self.criterion(self.model(anonymized, method), clear)
-                self._accumulate(sums, counts, per_item, method)
+                total, terms = self._apply(self.model(anonymized, method), clear)
+                self._accumulate(sums, counts, total, method)
+                self._accumulate_terms(term_sums, terms, method)
         finally:
             self.model.train(was_training)
-        return self._losses(sums, counts)
+        return self._losses(sums, counts, term_sums)
 
     def train_epoch(
         self, loader: Iterable[tuple[Tensor, Tensor, Tensor]], description: str = "", progress: bool = True
@@ -545,14 +719,17 @@ class FacialTrainer:
 
         self.model.train()
         sums, counts = self._totals()
+        term_sums: dict[str, Tensor] = {}
         # 'mininterval' keeps the bar from writing megabytes of carriage returns into a log, the
         # same reason the workflow scripts set it.
         stepped = tqdm(loader, desc=description, mininterval=5.0) if progress else loader
 
         for batch in stepped:
             anonymized, clear, method = self._batch(batch)
-            self._accumulate(sums, counts, self.step(anonymized, clear, method), method)
-        return self._losses(sums, counts)
+            total, terms = self.step(anonymized, clear, method)
+            self._accumulate(sums, counts, total, method)
+            self._accumulate_terms(term_sums, terms, method)
+        return self._losses(sums, counts, term_sums)
 
     def fit(
         self,
@@ -602,6 +779,13 @@ class FacialTrainer:
                     self.history[prefix].append(losses.overall)
                     for name, value in losses.per_method.items():
                         self.history[f"{prefix}_{name}"].append(value)
+                    # Term keys are only known once a criterion has run, so they are created on
+                    # first sight rather than up front -- and back-filled with NaN so every
+                    # series stays the same length as the epoch count.
+                    for term, value in losses.per_term.items():
+                        self._record(f"{prefix}:{term}", value)
+                        for name, split in losses.per_term_method[term].items():
+                            self._record(f"{prefix}:{term}_{name}", split)
 
                 logger.info(
                     "Trained epoch",
@@ -612,6 +796,7 @@ class FacialTrainer:
                         "train": round(training.overall, 5),
                         "val": round(validation.overall, 5),
                         **{f"val_{name}": round(value, 5) for name, value in validation.per_method.items()},
+                        **{f"val:{term}": round(value, 5) for term, value in validation.per_term.items()},
                     },
                 )
 

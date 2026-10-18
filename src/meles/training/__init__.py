@@ -10,9 +10,14 @@ the pairing of clear and anonymized images, and the loop that consumes it.
 
 from meles.training.facial import (
     CURRICULUM,
+    IDENTITY_WEIGHT,
     FacialFrames,
     FacialTrainer,
+    IdentityLoss,
+    WeightedCriterion,
     l1_per_item,
+    load_facial,
+    reconstruct,
     split_identities,
 )
 from meles.training.facial import Losses as FacialLosses
@@ -22,22 +27,27 @@ from meles.training.sources import ImageArchive, ImageDirectory, ImageSource, Sl
 
 __all__ = [
     "CURRICULUM",
+    "IDENTITY_WEIGHT",
     "AnonymizedPairs",
     "FacialFrames",
     "FacialLosses",
     "FacialTrainer",
+    "IdentityLoss",
     "ImageArchive",
     "ImageDirectory",
     "ImageSource",
     "Losses",
     "Pix2PixTrainer",
     "Slice",
+    "WeightedCriterion",
     "as_image",
     "augment",
     "augmentation_params",
     "checkpoint_path",
     "default_device",
     "l1_per_item",
+    "load_facial",
+    "reconstruct",
     "split",
     "split_identities",
 ]
