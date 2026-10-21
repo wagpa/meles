@@ -476,3 +476,141 @@ def test_a_plain_tensor_criterion_still_works():
     total, terms = run.step(*batch([0]))
     assert list(terms) == ["loss"]
     assert torch.allclose(total, terms["loss"])
+
+
+def contrastive(**kwargs):
+    from meles.training.facial import ContrastiveIdentityLoss
+
+    return ContrastiveIdentityLoss(encoder=TinyEncoder(), **kwargs)
+
+
+def test_contrastive_prefers_the_right_target_over_the_wrong_one():
+    """The whole point: being close to your own target is not enough if everyone else is too."""
+    loss = contrastive()
+    targets = torch.rand(4, CHANNELS, SIZE, SIZE) * 2 - 1
+    right = float(loss(targets, targets).mean())
+    shuffled = float(loss(torch.roll(targets, 1, dims=0), targets).mean())
+    assert right < shuffled
+
+
+def test_contrastive_masks_items_that_share_a_target():
+    """Validation yields each identity once per method; it must not be its own negative."""
+    loss = contrastive()
+    target = torch.rand(1, CHANNELS, SIZE, SIZE) * 2 - 1
+    repeated = target.expand(4, -1, -1, -1).contiguous()
+    # Every item has the same target, so every negative is masked and only the answer remains.
+    assert torch.allclose(loss(repeated, repeated), torch.zeros(4), atol=1e-5)
+
+
+def test_contrastive_is_zero_for_a_batch_of_one():
+    """One item has no negatives, so there is nothing to rank."""
+    loss = contrastive()
+    single = torch.rand(1, CHANNELS, SIZE, SIZE) * 2 - 1
+    assert torch.allclose(loss(single, single), torch.zeros(1))
+
+
+def test_contrastive_still_takes_no_gradient_into_the_critic():
+    loss = contrastive()
+    generated = (torch.rand(3, CHANNELS, SIZE, SIZE) * 2 - 1).requires_grad_(True)
+    loss(generated, torch.rand(3, CHANNELS, SIZE, SIZE) * 2 - 1).mean().backward()
+    assert generated.grad is not None
+    assert all(p.grad is None for p in loss.encoder.parameters())
+
+
+def test_fit_records_whatever_the_metrics_hook_returns():
+    run = trainer()
+    history = run.fit(
+        lambda s: [batch([0])],
+        [batch([0, 1])],
+        epochs_per_stage=2,
+        stages=[1],
+        progress=False,
+        metrics=lambda t: {"rank1": 0.25 * t.epoch, "rank1_none": 0.5},
+    )
+    assert history["val:rank1"] == [0.25, 0.5]
+    assert history["val:rank1_none"] == [0.5, 0.5]
+
+
+def test_best_checkpoint_keeps_the_best_epoch_not_the_last(tmp_path: Path):
+    """Rank-1 wobbles by several points between epochs, so the last one is an arbitrary draw."""
+    run = trainer()
+    scores = iter([0.1, 0.9, 0.3])
+    path = tmp_path / "facial.pt"
+    run.fit(
+        lambda s: [batch([0])],
+        [batch([0, 1])],
+        epochs_per_stage=3,
+        stages=[1],
+        progress=False,
+        checkpoint=path,
+        best="val:rank1",
+        metrics=lambda t: {"rank1": next(scores)},
+    )
+
+    kept = tmp_path / "facial.best.pt"
+    assert kept.exists(), "a best checkpoint should have been written"
+    assert torch.load(kept, map_location="cpu", weights_only=False)["epoch"] == 2
+    # The rolling checkpoint still holds the last epoch.
+    assert torch.load(path, map_location="cpu", weights_only=False)["epoch"] == 3
+
+
+def test_best_can_minimise_a_loss_instead(tmp_path: Path):
+    run = trainer()
+    scores = iter([0.9, 0.1, 0.5])
+    path = tmp_path / "facial.pt"
+    run.fit(
+        lambda s: [batch([0])],
+        [batch([0, 1])],
+        epochs_per_stage=3,
+        stages=[1],
+        progress=False,
+        checkpoint=path,
+        best="val:thing",
+        maximize=False,
+        metrics=lambda t: {"thing": next(scores)},
+    )
+    assert torch.load(tmp_path / "facial.best.pt", map_location="cpu", weights_only=False)["epoch"] == 2
+
+
+def test_best_resumes_from_the_record_already_in_the_history(tmp_path: Path):
+    """A second fit must not overwrite a better epoch from the first with a worse one."""
+    run = trainer()
+    path = tmp_path / "facial.pt"
+    run.fit(
+        lambda s: [batch([0])],
+        [batch([0])],
+        epochs_per_stage=1,
+        stages=[1],
+        progress=False,
+        checkpoint=path,
+        best="val:rank1",
+        metrics=lambda t: {"rank1": 0.8},
+    )
+    run.fit(
+        lambda s: [batch([0])],
+        [batch([0])],
+        epochs_per_stage=1,
+        stages=[1],
+        progress=False,
+        checkpoint=path,
+        best="val:rank1",
+        metrics=lambda t: {"rank1": 0.2},
+    )
+    assert torch.load(tmp_path / "facial.best.pt", map_location="cpu", weights_only=False)["epoch"] == 1
+
+
+def test_best_ignores_epochs_where_the_metric_was_nan(tmp_path: Path):
+    run = trainer()
+    scores = iter([float("nan"), 0.4])
+    path = tmp_path / "facial.pt"
+    run.fit(
+        lambda s: [batch([0])],
+        [batch([0])],
+        epochs_per_stage=2,
+        stages=[1],
+        progress=False,
+        checkpoint=path,
+        best="val:rank1",
+        metrics=lambda t: {"rank1": next(scores)},
+    )
+    assert torch.load(tmp_path / "facial.best.pt", map_location="cpu", weights_only=False)["epoch"] == 2

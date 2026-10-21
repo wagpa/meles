@@ -428,6 +428,65 @@ class IdentityLoss(nn.Module):
         return 1.0 - (self.embed(generated) * wanted).sum(dim=1)
 
 
+class ContrastiveIdentityLoss(IdentityLoss):
+    """
+    InfoNCE over the batch: the reconstruction must embed closer to **its own** target than to
+    anybody else's.
+
+    :class:`IdentityLoss` only pulls towards the right face; nothing pushes away from the wrong
+    ones, and a reconstruction can grow more similar to its target while growing just as similar
+    to everyone -- which moves the cosine and leaves identification where it was. Rank-1 is a
+    ranking question, so this optimises the ranking directly.
+
+    Items that share a target are masked out of each other's negatives. The validation split
+    yields every identity once per anonymization, so without the mask an identity would be
+    punished for resembling itself under a different method.
+    """
+
+    def __init__(
+        self,
+        weights: str | Path | None = None,
+        encoder: FacialEncoder | None = None,
+        temperature: float = 0.05,
+        duplicate: float = 0.999,
+    ):
+        """
+        :param weights: The recogniser weights, as for :class:`IdentityLoss`
+        :param encoder: An already-built encoder to copy the critic from
+        :param temperature: Softmax temperature over the cosine similarities. Low because cosines
+            live in [-1, 1], so the logits need scaling before a softmax separates them at all
+        :param duplicate: Cosine above which two targets are taken to be the same identity, and
+            so masked out of each other's negatives
+        """
+        super().__init__(weights=weights, encoder=encoder)
+        self.temperature = temperature
+        self.duplicate = duplicate
+
+    def forward(self, generated: Tensor, target: Tensor) -> Tensor:
+        """
+        :param generated: What the model produced, ``(B, 3, 112, 112)`` in [-1, 1]
+        :param target: The clear target, the same shape
+        :return: The per-item cross entropy, ``(B,)``. A batch of one has no negatives, so it is
+            zero by construction
+        """
+        with torch.no_grad():
+            gallery = self.embed(target)
+        probe = self.embed(generated)
+
+        logits = probe @ gallery.T / self.temperature
+        own = torch.arange(len(probe), device=logits.device)
+
+        # Mask other items that carry the same target, but never the diagonal -- that is the
+        # answer. -inf drops them out of the softmax entirely.
+        shared = (gallery @ gallery.T) > self.duplicate
+        shared[own, own] = False
+        logits = logits.masked_fill(shared, float("-inf"))
+
+        if len(probe) < 2:
+            return torch.zeros(len(probe), device=logits.device)
+        return fun.cross_entropy(logits, own, reduction="none")
+
+
 class WeightedCriterion:
     """
     Several per-item losses, summed with weights.
@@ -572,7 +631,7 @@ class FacialTrainer:
         keys = ["stage", "train", "val"]
         return keys + [f"{prefix}_{name}" for prefix in ("train", "val") for name in self.methods]
 
-    def _record(self, key: str, value: float) -> None:
+    def record(self, key: str, value: float) -> None:
         """
         Append to a history series, creating it if this is the first epoch that produced it.
 
@@ -738,6 +797,9 @@ class FacialTrainer:
         epochs_per_stage: int = 25,
         stages: Sequence[int] | None = None,
         checkpoint: str | Path | None = None,
+        best: str | None = None,
+        maximize: bool = True,
+        metrics: Callable[["FacialTrainer"], dict[str, float]] | None = None,
         on_epoch: Callable[["FacialTrainer", int], None] | None = None,
         progress: bool = True,
     ) -> dict[str, list[float]]:
@@ -754,12 +816,26 @@ class FacialTrainer:
         :param epochs_per_stage: Epochs to train at each stage
         :param stages: Which curriculum stages to run, defaulting to all of them in order
         :param checkpoint: A file to write after every epoch, or None not to
+        :param best: A history key to also keep the best epoch of, written alongside
+            ``checkpoint`` with ``.best`` before the suffix. Worth setting whenever the metric is
+            noisier than the improvement: rank-1 over a few dozen identities swings several points
+            between neighbouring epochs, so the last epoch is an arbitrary draw from the
+            trajectory rather than its best point
+        :param maximize: Whether a larger ``best`` is better. True for rank-1, False for a loss
+        :param metrics: Called with the trainer after each epoch; whatever it returns is recorded
+            into the history under ``val:<key>``. Use it for numbers the loss cannot express --
+            :func:`identification` is the one that matters, since rank-1 is what the experiment
+            scores and the loss only approximates
         :param on_epoch: Called with ``(trainer, epoch)`` after each epoch, for plotting samples
         :param progress: Whether to show a per-epoch progress bar
         :return: The full history, including any epochs from before this call
         """
         started = time.time()
         schedule = list(range(len(self.methods))) if stages is None else list(stages)
+        record = float("-inf") if maximize else float("inf")
+        if best is not None and self.history.get(best):
+            seen = [value for value in self.history[best] if value == value]
+            record = (max if maximize else min)([record, *seen])
 
         for stage in schedule:
             loader = train_loader_for(stage)
@@ -783,9 +859,13 @@ class FacialTrainer:
                     # first sight rather than up front -- and back-filled with NaN so every
                     # series stays the same length as the epoch count.
                     for term, value in losses.per_term.items():
-                        self._record(f"{prefix}:{term}", value)
+                        self.record(f"{prefix}:{term}", value)
                         for name, split in losses.per_term_method[term].items():
-                            self._record(f"{prefix}:{term}_{name}", split)
+                            self.record(f"{prefix}:{term}_{name}", split)
+
+                measured = metrics(self) if metrics is not None else {}
+                for key, value in measured.items():
+                    self.record(f"val:{key}", value)
 
                 logger.info(
                     "Trained epoch",
@@ -797,11 +877,21 @@ class FacialTrainer:
                         "val": round(validation.overall, 5),
                         **{f"val_{name}": round(value, 5) for name, value in validation.per_method.items()},
                         **{f"val:{term}": round(value, 5) for term, value in validation.per_term.items()},
+                        **{f"val:{key}": round(value, 5) for key, value in measured.items()},
                     },
                 )
 
                 if checkpoint is not None:
                     self.save(checkpoint)
+                if best is not None and checkpoint is not None:
+                    latest = self.history.get(best, [float("nan")])[-1]
+                    # NaN compares False either way, so an epoch that did not produce the metric
+                    # simply never becomes the record.
+                    if (latest > record) if maximize else (latest < record):
+                        record = latest
+                        kept = Path(checkpoint)
+                        self.save(kept.with_suffix(f".best{kept.suffix}"))
+                        logger.info("New best epoch", extra={"epoch": self.epoch, best: latest})
                 if on_epoch is not None:
                     on_epoch(self, self.epoch)
 
@@ -948,3 +1038,64 @@ def reconstruct(
         return model(batched, method).cpu()
     finally:
         model.train(was_training)
+
+
+@torch.no_grad()
+def identification(
+    model: Facial,
+    frames: "FacialFrames",
+    embedder: Callable[[Tensor], np.ndarray],
+    ranks: Sequence[int] = (1, 5),
+    chunk: int = 16,
+) -> dict[str, float]:
+    """
+    Rank-k identification accuracy: how often a reconstruction's nearest gallery face is the
+    right person.
+
+    **This is the number the experiment scores, and the one to steer on.** Cosine distance
+    compresses almost all of its interesting range into the last tenth -- unrelated faces sit at
+    ``1 - cos`` near 1.0 -- so a large change in whether the right identity ranks first shows up
+    there as a rounding error. Identification only asks that the correct face be *nearest*, not
+    that it be absolutely close.
+
+    The gallery is the clear target of every identity in ``frames``; the probes are the
+    reconstructions, one per identity per anonymization.
+
+    :param model: A trained model
+    :param frames: The validation set, built with ``all_methods=True`` and ``deterministic=True``
+        so the layout is identity-major and stable between epochs
+    :param embedder: Maps ``(B, 3, H, W)`` in [-1, 1] to L2-normalised embeddings. Use a
+        recogniser that is **not** the training critic, or this grades its own work
+    :param ranks: Which rank-k accuracies to report
+    :param chunk: How many identities to reconstruct at once
+    :return: ``rank1``, ``rank1_<method>``, ... as fractions in [0, 1]
+    :raises ValueError: If ``frames`` was not built with ``all_methods``
+    """
+    if not frames.all_methods:
+        raise ValueError("identification needs a dataset built with all_methods=True")
+
+    width = frames.stage + 1
+    people = len(frames) // width
+    gallery = embedder(torch.stack([frames[i * width][1] for i in range(people)]))
+    answer = np.arange(people)
+
+    scores: dict[str, float] = {}
+    hits: dict[int, list[float]] = {rank: [] for rank in ranks}
+    for index in range(width):
+        produced = []
+        for begin in range(0, people, chunk):
+            block = torch.stack([frames[p * width + index][0] for p in range(begin, min(begin + chunk, people))])
+            produced.append(reconstruct(model, block, index))
+        similarity = embedder(torch.cat(produced)) @ gallery.T
+
+        # argsort descending, then ask where the right answer landed.
+        order = np.argsort(-similarity, axis=1)
+        position = np.argmax(order == answer[:, None], axis=1)
+        for rank in ranks:
+            value = float((position < rank).mean())
+            scores[f"rank{rank}_{frames.names[index]}"] = value
+            hits[rank].append(value)
+
+    for rank in ranks:
+        scores[f"rank{rank}"] = float(np.mean(hits[rank]))
+    return scores
