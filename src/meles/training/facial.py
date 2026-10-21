@@ -72,6 +72,10 @@ WEIGHT_DECAY = 5e-4
 # that decides whether the model prefers a sharp face or the right one.
 IDENTITY_WEIGHT = 0.3
 
+# The first entry of 'FacialDecoder's unscaled channel ladder, used to recover the width of a
+# checkpoint written before the width was stored in it.
+BASE_DECODER_CHANNELS = 256
+
 # Bumped when the checkpoint layout changes, so an older file fails loudly rather than loading
 # into mismatched state dicts.
 CHECKPOINT_FORMAT = 1
@@ -908,9 +912,14 @@ class FacialTrainer:
             cannot be resumed, only run
         :return: Everything needed to resume this run, or to run it
         """
+        decoder = getattr(self.model, "decoder", None)
         state = {
             "format": CHECKPOINT_FORMAT,
             "model": self.model.state_dict(),
+            # Recorded because they decide the parameter shapes: a checkpoint cannot be read back
+            # without them, and before this they were not stored at all.
+            "width": getattr(decoder, "width", 1.0),
+            "dropout": getattr(decoder, "dropout", 0.0),
             "epoch": self.epoch,
             "stage": self.stage,
             "methods": self.methods,
@@ -978,6 +987,10 @@ def load_facial(path: str | Path, device: torch.device | str | None = None) -> t
     """
     Load a trained model for inference, without building a trainer around it.
 
+    The decoder's ``width`` comes from the checkpoint, so a model trained at a non-default
+    width reloads as itself. Checkpoints written before the width was recorded have it inferred
+    from the first decoder block's shape.
+
     :param path: A checkpoint written by :meth:`FacialTrainer.save`, with or without optimiser
         state
     :param device: Where to put the model, defaulting to CUDA when there is one
@@ -992,7 +1005,14 @@ def load_facial(path: str | Path, device: torch.device | str | None = None) -> t
         raise ValueError(f"Checkpoint format {payload.get('format')!r}, expected {CHECKPOINT_FORMAT}")
 
     methods = list(payload["methods"])
-    model = Facial(methods=len(methods))
+    width = payload.get("width")
+    if width is None:
+        # Written before the width was recorded. The first decoder block's output channel count
+        # is the ladder's first entry, so dividing by its unscaled value recovers the multiplier.
+        first = payload["model"].get("decoder.blocks.0.conv1.weight")
+        width = 1.0 if first is None else first.shape[0] / BASE_DECODER_CHANNELS
+
+    model = Facial(methods=len(methods), width=width, dropout=payload.get("dropout", 0.0))
     model.load_state_dict(payload["model"])
     model.to(where).eval()
 

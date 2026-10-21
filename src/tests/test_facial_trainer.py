@@ -614,3 +614,57 @@ def test_best_ignores_epochs_where_the_metric_was_nan(tmp_path: Path):
         metrics=lambda t: {"rank1": next(scores)},
     )
     assert torch.load(tmp_path / "facial.best.pt", map_location="cpu", weights_only=False)["epoch"] == 2
+
+
+def test_a_wide_model_reloads_at_its_own_width(tmp_path: Path):
+    """load_facial rebuilds the model, so the width has to travel with the checkpoint."""
+    from meles.frame_aggregation.facial import Facial
+    from meles.training.facial import load_facial
+
+    run = FacialTrainer(model=Facial(methods=len(CURRICULUM), width=2.0, dropout=0.1), device="cpu")
+    path = run.save(tmp_path / "wide.pt")
+
+    model, meta = load_facial(path, device="cpu")
+    assert model.decoder.chans == (512, 384, 256, 128)
+    assert meta["epoch"] == run.epoch
+    for a, b in zip(run.model.parameters(), model.parameters()):
+        assert torch.equal(a, b)
+
+
+def test_the_checkpoint_records_the_decoder_settings(tmp_path: Path):
+    from meles.frame_aggregation.facial import Facial
+    from meles.training.facial import load_facial
+
+    run = FacialTrainer(model=Facial(methods=len(CURRICULUM), width=1.5, dropout=0.25), device="cpu")
+    payload = torch.load(run.save(tmp_path / "w.pt"), map_location="cpu", weights_only=False)
+    assert payload["width"] == 1.5
+    assert payload["dropout"] == 0.25
+    assert load_facial(tmp_path / "w.pt", device="cpu")[0].decoder.chans == Facial(width=1.5).decoder.chans
+
+
+def test_a_checkpoint_from_before_the_width_was_recorded_still_loads(tmp_path: Path):
+    """The three runs trained before this existed must not need retraining."""
+    from meles.frame_aggregation.facial import Facial
+    from meles.training.facial import load_facial
+
+    run = FacialTrainer(model=Facial(methods=len(CURRICULUM), width=2.0), device="cpu")
+    path = run.save(tmp_path / "old.pt")
+
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    del payload["width"], payload["dropout"]  # as the older files are
+    torch.save(payload, path)
+
+    # Inferred from the first decoder block rather than read.
+    assert load_facial(path, device="cpu")[0].decoder.chans == (512, 384, 256, 128)
+
+
+def test_an_unrecorded_default_width_checkpoint_still_loads(tmp_path: Path):
+    from meles.frame_aggregation.facial import Facial
+    from meles.training.facial import load_facial
+
+    path = FacialTrainer(model=Facial(methods=len(CURRICULUM)), device="cpu").save(tmp_path / "old.pt")
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    del payload["width"], payload["dropout"]
+    torch.save(payload, path)
+
+    assert load_facial(path, device="cpu")[0].decoder.chans == (256, 192, 128, 64)

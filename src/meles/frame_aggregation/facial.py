@@ -23,7 +23,7 @@ class FacialEncoder(nn.Module):
 
 
 class FacialDecoderBlock(nn.Module):
-    def __init__(self, cin, cout, groups=8):
+    def __init__(self, cin, cout, groups=8, dropout=0.0):
         super().__init__()
         self.up = nn.Upsample(scale_factor=2, mode="nearest")
         self.conv1 = nn.Conv2d(cin, cout, 3, 1, 1)
@@ -31,22 +31,52 @@ class FacialDecoderBlock(nn.Module):
         self.norm1 = nn.GroupNorm(groups, cout)
         self.norm2 = nn.GroupNorm(groups, cout)
         self.skip = nn.Conv2d(cin, cout, 1) if cin != cout else nn.Identity()
+        # Dropout2d, not Dropout: these are conv features, where neighbouring pixels of one
+        # channel are strongly correlated, so dropping individual activations leaks through the
+        # ones beside them. Dropping whole channels is what actually regularises here.
+        # It sits on the residual branch only, leaving the skip path clean.
+        self.drop = nn.Dropout2d(dropout) if dropout else nn.Identity()
 
     def forward(self, x):
         x = self.up(x)
         h = fun.silu(self.norm1(self.conv1(x)))
         h = fun.silu(self.norm2(self.conv2(h)))
-        return h + self.skip(x)
+        return self.drop(h) + self.skip(x)
 
 
 class FacialDecoder(nn.Module):
-    def __init__(self, cin=512, chans=(256, 192, 128, 64)):
+    def __init__(self, cin=512, chans=(256, 192, 128, 64), width=1.0, groups=8, dropout=0.0):
+        """
+        Expands the aggregator's ``512 x 7 x 7`` into a ``3 x 112 x 112`` face.
+
+        The bottleneck is the thing to keep in mind: 25,088 values in, 37,632 out, and no skip
+        path from the inputs -- unlike pix2pix's U-Net, every pixel of detail has to survive the
+        pooling. ``width`` is the dial for testing whether that, or the decoder's own capacity, is
+        what limits the result.
+
+        :param cin: Channels arriving from the aggregator
+        :param chans: The channel ladder, one entry per 2x upsampling step. Four steps take 7 to
+            112, so changing the length changes the output size
+        :param width: Multiplies every entry of ``chans``. 1.0 is the original decoder at 3.2 M
+            parameters; 2.0 is roughly four times that. Each result is rounded to a multiple of
+            ``groups``, which ``GroupNorm`` requires
+        :param groups: ``GroupNorm`` groups
+        :param dropout: Channel dropout on each block's residual branch. Worth turning on together
+            with ``width``, since a wider decoder overfits harder -- on this data the train/val
+            gap grew when the dataset was doubled, so capacity is not short of things to memorise
+        """
         super().__init__()
+        self.width = width
+        self.dropout = dropout
+        # Rounded up to a multiple of 'groups' so GroupNorm stays valid at any width, and never
+        # to zero.
+        self.chans = tuple(max(groups, int(round(c * width / groups)) * groups) for c in chans)
+
         self.blocks = nn.ModuleList()
-        for c in chans:
-            self.blocks.append(FacialDecoderBlock(cin, c))
+        for c in self.chans:
+            self.blocks.append(FacialDecoderBlock(cin, c, groups=groups, dropout=dropout))
             cin = c
-        self.out = nn.Sequential(nn.GroupNorm(8, cin), nn.SiLU(), nn.Conv2d(cin, 3, 3, 1, 1))
+        self.out = nn.Sequential(nn.GroupNorm(groups, cin), nn.SiLU(), nn.Conv2d(cin, 3, 3, 1, 1))
 
     def forward(self, x):
         for blk in self.blocks:
@@ -104,20 +134,25 @@ class FacialAggregator(nn.Module):
 
 
 class Facial(nn.Module):
-    def __init__(self, weights=None, methods=0):
+    def __init__(self, weights=None, methods=0, width=1.0, dropout=0.0):
         """
         ``methods`` is how many anonymizations one model covers, i.e. ``len(CURRICULUM)`` when it
         is trained across all of them. It conditions the aggregator's pooling query on which one
         the inputs carry; 0 keeps the unconditional query. The anonymization is known at inference
         -- a sweep leg names it, and blur, blocks and a black bar are not hard to tell apart -- so
         supplying it is not information the attacker would lack.
+
+        ``width`` and ``dropout`` size and regularise the decoder; see :class:`FacialDecoder`.
+        Both default to the original decoder, so a checkpoint written before they existed still
+        loads. **They change the parameter shapes**, so a checkpoint and the model that reads it
+        have to agree on them -- give a run at a new width a new checkpoint file.
         """
         super().__init__()
         self.encoder_frozen = False
         self.methods = methods
         self.encoder = FacialEncoder(weights=weights)
         self.aggregator = FacialAggregator(methods=methods)
-        self.decoder = FacialDecoder()
+        self.decoder = FacialDecoder(width=width, dropout=dropout)
 
     def forward(self, x, method=None):
         """x: B x N x 3 x 112 x 112, method: B -> B x 3 x 112 x 112"""
