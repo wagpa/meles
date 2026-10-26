@@ -7,10 +7,13 @@ paths that do not resolve against the data root.
 Synthetic clips keep it off any real corpus, and a stub detector keeps it off the model weights.
 """
 
+import logging
+import os
 from pathlib import Path
 
 import cv2
 import numpy as np
+import pandas as pd
 import pytest
 
 from meles.common import FacialArea
@@ -152,3 +155,64 @@ def test_an_empty_source_is_refused(tmp_path):
     empty.mkdir()
     with pytest.raises(FileNotFoundError, match="No identity directories"):
         extract_video_frames(empty, tmp_path / "out", progress=False)
+
+
+def test_an_empty_result_still_has_the_columns(clips, tmp_path):
+    """
+    An archive whose frames are all filtered out must answer ``["identity"]``, not raise.
+
+    Callers summarise what they got -- ``part["identity"].nunique()`` -- and a bare DataFrame()
+    has no columns, so the summary line would be the thing that crashed the run.
+    """
+    structure = extract_video_frames(
+        clips, tmp_path / "voxceleb", frames_per_video=4, detector=NeverFinds(), progress=False
+    )
+    assert structure.empty
+    assert list(structure.columns) == ["identity", "video", "frame", "frame_suffix", "path"]
+    assert structure["identity"].nunique() == 0
+
+
+def test_workers_produce_exactly_the_same_structure(clips, tmp_path):
+    """
+    Parallelism is an optimisation and must not change a single row.
+
+    Workers finish out of order, so this also pins that the structure is sorted rather than left
+    in whatever order the pool happened to complete in -- otherwise the parquet would differ run
+    to run and every downstream diff would be noise.
+    """
+    one = extract_video_frames(
+        clips, tmp_path / "one" / "voxceleb", frames_per_video=6, progress=False, require_face=False, workers=1
+    )
+    many = extract_video_frames(
+        clips, tmp_path / "many" / "voxceleb", frames_per_video=6, progress=False, require_face=False, workers=3
+    )
+    # ``path`` is relative to the destination's parent, so both sides read 'voxceleb/...'.
+    pd.testing.assert_frame_equal(one, many)
+
+
+def test_a_detector_cannot_be_handed_to_workers(clips, tmp_path):
+    """cv2.FaceDetectorYN does not pickle, so say so rather than failing inside a worker."""
+    with pytest.raises(ValueError, match="does not pickle"):
+        extract_video_frames(clips, tmp_path / "out", detector=AlwaysFinds(), workers=2, progress=False)
+
+
+def test_workers_none_leaves_one_core_free(clips, tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(os, "cpu_count", lambda: 4)
+    with caplog.at_level(logging.INFO, logger="meles.dataset"):
+        extract_video_frames(
+            clips, tmp_path / "voxceleb", frames_per_video=4, progress=False, require_face=False, workers=None
+        )
+    record = next(r for r in caplog.records if r.msg == "Extracted video frames")
+    assert record.workers == 3
+
+
+def test_unreadable_clips_are_counted_not_fatal(clips, tmp_path, caplog):
+    """0.03% of VoxCeleb2's clips would not open; that is worth a number, not a crash."""
+    (clips / IDENTITIES[0] / VIDEOS[0] / "99999.mp4").write_bytes(b"not a video")
+    with caplog.at_level(logging.INFO, logger="meles.dataset"):
+        structure = extract_video_frames(
+            clips, tmp_path / "voxceleb", frames_per_video=6, progress=False, require_face=False
+        )
+    record = next(r for r in caplog.records if r.msg == "Extracted video frames")
+    assert record.unreadable_clips == 1
+    assert not structure.empty
