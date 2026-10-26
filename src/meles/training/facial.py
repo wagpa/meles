@@ -43,6 +43,7 @@ import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import ModuleType
 
 import cv2
 import numpy as np
@@ -137,6 +138,7 @@ class FacialFrames(Dataset):
         detector: Detector = default_detector,
         exclude_target_video: bool = True,
         flip: bool = True,
+        stratify: bool = False,
         deterministic: bool = False,
         all_methods: bool = False,
         seed: int = 0,
@@ -165,6 +167,11 @@ class FacialFrames(Dataset):
         :param flip: Whether to mirror at random. One draw per item, applied to the target and all
             ``N`` inputs together -- mirroring only one end would ask the decoder for a face its
             inputs do not show
+        :param stratify: Whether to spread an item's frames across the identity's videos instead
+            of drawing them uniformly from the pool. Frames of one 3-second clip sit at 0.78 mean
+            cosine to each other against 0.42 across clips, so a uniform draw can hand the
+            aggregator eight copies of one observation -- which is the premise of the experiment
+            not being exercised. Costs nothing and changes only which frames are picked
         :param deterministic: Whether to draw the same frames, the same anonymization and no flip
             every epoch. What a *validation* split wants: a loss measured over freshly drawn
             frames each epoch is not comparable between epochs
@@ -187,6 +194,7 @@ class FacialFrames(Dataset):
         self.size = size
         self.detector = detector
         self.flip = flip
+        self.stratify = stratify
         self.deterministic = deterministic
         self.all_methods = all_methods
         self.seed = seed
@@ -200,12 +208,20 @@ class FacialFrames(Dataset):
         target_path = set(self.target.values())
 
         self.pool: dict[str, list[str]] = {}
+        # The same paths grouped by the video they came from, which is what 'stratify' draws
+        # across. Frames of one video are near-duplicates -- measured at 0.78 mean cosine against
+        # 0.42 across videos -- so the number of videos an item spans is closer to its number of
+        # genuinely independent observations than its frame count is.
+        self.videos: dict[str, list[list[str]]] = {}
         for identity, group in structure[structure["identity"].isin(list(wanted))].groupby("identity"):
             if exclude_target_video:
                 group = group[group["video"] != target_video[identity]]
-            paths = [str(path) for path in group["path"] if path not in target_path]
-            if paths:
-                self.pool[str(identity)] = paths
+            group = group[~group["path"].isin(target_path)]
+            if group.empty:
+                continue
+            name = str(identity)
+            self.pool[name] = [str(path) for path in group["path"]]
+            self.videos[name] = [[str(path) for path in shot["path"]] for _, shot in group.groupby("video", sort=True)]
 
         self.identities = sorted(self.pool)
         dropped = sorted(wanted - set(self.identities))
@@ -296,6 +312,40 @@ class FacialFrames(Dataset):
             return FacialArea(x=0, y=0, w=width, h=height)
         return area
 
+    def _draw(self, identity: str, draw: "random.Random | ModuleType") -> list[str]:
+        """
+        The ``frames`` paths one item is built from.
+
+        Uniformly from the pool by default. Under :attr:`stratify`, round-robin across the
+        identity's videos instead, so an item spans as many of them as it can: drawing uniformly
+        lets a whole item land in one 3-second clip, which is one observation wearing the costume
+        of eight. Measured on YouTube Faces, a uniform 8-frame item held 1.77 distinct videos and
+        47% of items held just one.
+
+        :param identity: Whose frames to draw
+        :param draw: The seeded or shared random source
+        :return: Exactly ``frames`` paths, with repeats only if the identity has fewer
+        """
+        pool = self.pool[identity]
+        if not self.stratify:
+            # 'choices' rather than 'sample': an identity may hold fewer frames than N, and
+            # repeating an observation is a truthful item -- the attacker simply saw less.
+            return draw.sample(pool, self.frames) if len(pool) >= self.frames else draw.choices(pool, k=self.frames)
+
+        shots = [list(shot) for shot in self.videos[identity]]
+        draw.shuffle(shots)
+        for shot in shots:
+            draw.shuffle(shot)
+
+        chosen: list[str] = []
+        while len(chosen) < self.frames:
+            served = [shot.pop() for shot in shots if shot]
+            if not served:
+                # Every video exhausted and still short of N, so fall back to repeating.
+                return chosen + draw.choices(pool, k=self.frames - len(chosen))
+            chosen.extend(served[: self.frames - len(chosen)])
+        return chosen
+
     def crop(self, path: str, method: int | None, flip: bool) -> Image:
         """
         One aligned crop, anonymized or clear.
@@ -328,15 +378,12 @@ class FacialFrames(Dataset):
         # differ only in how they were anonymized.
         position, fixed = divmod(index, self.stage + 1) if self.all_methods else (index, None)
         identity = self.identities[position]
-        pool = self.pool[identity]
 
         # Seeded by position under 'deterministic' so a validation item is the same every epoch.
         # Otherwise drawn from the 'random' module, which a DataLoader reseeds per worker, so the
         # workers draw different frames instead of replaying one stream.
         draw = random.Random(self.seed + position) if self.deterministic else random
-        # 'choices' rather than 'sample': an identity may hold fewer frames than N, and repeating
-        # an observation is a truthful item -- the attacker simply saw less.
-        chosen = draw.sample(pool, self.frames) if len(pool) >= self.frames else draw.choices(pool, k=self.frames)
+        chosen = self._draw(identity, draw)
 
         # One anonymization for the whole item, uniform over the stages unlocked so far. Drawing
         # per frame instead would build an item mixing methods, which no sweep leg ever produces.

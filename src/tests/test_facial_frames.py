@@ -254,3 +254,66 @@ def test_split_identities_holds_out_identities_not_frames():
 def test_split_identities_is_reproducible():
     first = split_identities(IDENTITIES * 4, validation=0.5, seed=7)
     assert first == split_identities(IDENTITIES * 4, validation=0.5, seed=7)
+
+
+def videos_in(frames, index, structure):
+    """Which videos the item at `index` actually drew from."""
+    video_of = dict(zip(structure["path"], structure["video"]))
+    import random as _random
+
+    draw = _random.Random(frames.seed + index) if frames.deterministic else _random
+    return {video_of[path] for path in frames._draw(frames.identities[index], draw)}
+
+
+def test_stratify_spreads_an_item_across_every_video_it_can(dataset):
+    """A uniform draw can land a whole item in one shot, which is one observation, not N."""
+    structure, targets, root = dataset
+    frames = build(dataset, frames=4, stratify=True, deterministic=True)
+    for index in range(len(frames)):
+        # Two videos survive excluding the target's, and four frames must cover both.
+        assert len(videos_in(frames, index, structure)) == 2
+
+
+def test_without_stratify_an_item_can_collapse_into_one_video(dataset):
+    """The behaviour stratify exists to fix; it must still be the default."""
+    structure, targets, root = dataset
+    frames = build(dataset, frames=2, stratify=False)
+    assert frames.stratify is False
+    seen = {len(videos_in(frames, 0, structure)) for _ in range(60)}
+    assert 1 in seen, "a uniform draw should sometimes pick both frames from one video"
+
+
+def test_stratify_still_returns_exactly_n_frames(dataset):
+    for count in (1, 2, 3, 5, 8, 32):
+        frames = build(dataset, frames=count, stratify=True, deterministic=True)
+        anonymized, _, _ = frames[0]
+        assert anonymized.shape[0] == count
+
+
+def test_stratify_repeats_only_once_every_video_is_exhausted(dataset):
+    """Eight frames exist per identity here, so asking for 32 has to repeat -- but not before."""
+    structure, _, _ = dataset
+    frames = build(dataset, frames=8, stratify=True, deterministic=True)
+    import random as _random
+
+    chosen = frames._draw(frames.identities[0], _random.Random(0))
+    assert len(chosen) == 8
+    assert len(set(chosen)) == 8, "no repeats while unused frames remain"
+
+
+def test_stratify_never_draws_the_target_or_its_video(dataset):
+    frames = build(dataset, frames=4, stratify=True, deterministic=True)
+    import random as _random
+
+    for index, identity in enumerate(frames.identities):
+        chosen = frames._draw(identity, _random.Random(index))
+        assert frames.target[identity] not in chosen
+        assert all(f"/{identity}/1/" not in path for path in chosen)
+
+
+def test_the_video_grouping_matches_the_flat_pool(dataset):
+    frames = build(dataset, stratify=True)
+    for identity in frames.identities:
+        flat = sorted(frames.pool[identity])
+        grouped = sorted(path for shot in frames.videos[identity] for path in shot)
+        assert flat == grouped

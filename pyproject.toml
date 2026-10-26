@@ -29,6 +29,12 @@ dependencies = [
     "pyarrow>=25.0.0",
     "scikit-learn>=1.9.0",
     "seaborn>=0.13.2",
+    # VoxCeleb2's video is no longer distributed by VGG ("the video files ... are no longer
+    # available from this website"), so src/notebooks/08 pulls it from the ProgramComputer/voxceleb
+    # mirror. 2.0 is the floor because the transfer backend changed there: hf_transfer and its
+    # HF_HUB_ENABLE_HF_TRANSFER flag are gone, replaced by Xet (pulled in as hf-xet) and
+    # HF_XET_HIGH_PERFORMANCE, which is what the notebook sets for the 50 GiB archives.
+    "huggingface-hub>=2.0.0",
     "snakemake>=9.23.1",
     "snakevision>=1.1.0",
     # Not imported by the pipeline: inference runs on ONNX Runtime. Kept for the

@@ -1,6 +1,17 @@
+import logging
+from collections.abc import Mapping
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+import cv2
+import numpy as np
 import pandas as pd
+from numpy.typing import NDArray
+
+if TYPE_CHECKING:
+    from meles.detection import Detector
+
+logger = logging.getLogger(__name__)
 
 
 def read_dataset(path: Path, root: Path | None = None) -> pd.DataFrame:
@@ -126,3 +137,133 @@ def k_fold_splits(
 
     # 4. propagate the fold index to every frame
     return df.merge(videos, on=[identity_col, video_col], how="left")
+
+
+def extract_video_frames(
+    source: Path,
+    destination: Path,
+    frames_per_video: int = 25,
+    videos_per_identity: int | None = None,
+    names: Mapping[str, str] | None = None,
+    detector: "Detector | None" = None,
+    require_face: bool = True,
+    progress: bool = True,
+) -> pd.DataFrame:
+    """
+    Turn a tree of ``identity/video/clip.mp4`` into the ``identity/video/frame.jpg`` layout
+    :func:`read_dataset` walks.
+
+    Written for VoxCeleb2, whose ``dev/mp4/id00012/21Uxsk56VDQ/00001.mp4`` is exactly that shape.
+    The middle level is the **YouTube video**, and that is the level that matters: clips sharing
+    one video id are segments of a single recording session, while different video ids are
+    genuinely separate sightings of the person. On YouTube Faces an identity offers 1.8 such
+    sessions once its target's is held out, and validation rank-1 measured 26.7% for the
+    identities with one against 63.6% for those with more -- so sessions, not frames, are what
+    the aggregation has to work with.
+
+    Frames are therefore spread **evenly across each video's whole duration** rather than taken
+    consecutively. Neighbouring frames of one clip sit at 0.78 mean cosine against 0.42 across
+    clips, so a consecutive run would be one observation copied ``frames_per_video`` times.
+
+    :param source: The root holding ``identity/video/*.mp4``
+    :param destination: Where to write ``identity/video/*.jpg``; created if needed
+    :param frames_per_video: How many frames to keep per video, spread across its clips
+    :param videos_per_identity: Cap on videos kept per identity, or None for all. A cap trades
+        sessions per person against people, which is the wrong way round here
+    :param names: Maps a source identity directory to the name to store, e.g. ``id00012`` to
+        ``Aaron_Eckhart`` via ``vox2_meta.csv``. Without it the directory name is used
+    :param detector: Used when ``require_face``; defaults to the pipeline's shared YuNet
+    :param require_face: Whether to keep only frames a face is found in. A frame without one is
+        not an observation of anybody, and as training data it teaches nothing
+    :param progress: Whether to show a progress bar
+    :return: The structure, with ``path`` relative to ``destination``'s parent so it reads like
+        the YouTube Faces one
+    """
+    from tqdm.auto import tqdm
+
+    if detector is None and require_face:
+        from meles.detection import default_detector
+
+        detector = default_detector
+
+    source, destination = Path(source), Path(destination)
+    identities = sorted(d for d in source.iterdir() if d.is_dir())
+    if not identities:
+        raise FileNotFoundError(f"No identity directories under {source}")
+
+    rows: list[dict[str, str]] = []
+    missed = 0
+    stepped = tqdm(identities, desc="extracting", mininterval=5.0) if progress else identities
+
+    for identity_dir in stepped:
+        identity = names.get(identity_dir.name, identity_dir.name) if names else identity_dir.name
+        videos = sorted(d for d in identity_dir.iterdir() if d.is_dir())[:videos_per_identity]
+
+        for video_dir in videos:
+            clips = sorted(video_dir.glob("*.mp4"))
+            if not clips:
+                continue
+
+            # Spread the budget over the video's clips, so one long clip cannot supply all of it.
+            per_clip = max(1, round(frames_per_video / len(clips)))
+            written = 0
+            for clip in clips:
+                if written >= frames_per_video:
+                    break
+                for image in _sample_clip(clip, min(per_clip, frames_per_video - written)):
+                    if require_face and detector is not None and detector.detect_best(image) is None:
+                        missed += 1
+                        continue
+                    name = f"{clip.stem}.{written:04d}.jpg"
+                    out = destination / identity / video_dir.name / name
+                    out.parent.mkdir(parents=True, exist_ok=True)
+                    cv2.imwrite(str(out), image)
+                    rows.append(
+                        {
+                            "identity": identity,
+                            "video": video_dir.name,
+                            "frame": name,
+                            "frame_suffix": ".jpg",
+                            "path": str(out.relative_to(destination.parent)),
+                        }
+                    )
+                    written += 1
+
+    logger.info(
+        "Extracted video frames",
+        extra={"identities": len(identities), "frames": len(rows), "no_face": missed},
+    )
+    return pd.DataFrame(rows)
+
+
+def _sample_clip(clip: Path, count: int) -> list[NDArray[np.uint8]]:
+    """
+    ``count`` frames spread evenly across a clip's duration.
+
+    Evenly rather than consecutively on purpose: consecutive frames of one clip are near
+    duplicates, so a run of them is a single observation wearing a crowd's costume.
+
+    :param clip: The video file
+    :param count: How many frames to return, fewer if the clip is shorter
+    :return: The frames, BGR uint8
+    """
+    capture = cv2.VideoCapture(str(clip))
+    try:
+        if not capture.isOpened():
+            logger.warning("Could not open clip", extra={"clip": str(clip)})
+            return []
+
+        total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total <= 0:
+            return []
+
+        wanted = np.linspace(0, total - 1, num=min(count, total), dtype=int)
+        frames = []
+        for position in wanted:
+            capture.set(cv2.CAP_PROP_POS_FRAMES, int(position))
+            ok, image = capture.read()
+            if ok:
+                frames.append(image.astype(np.uint8, copy=False))
+        return frames
+    finally:
+        capture.release()
