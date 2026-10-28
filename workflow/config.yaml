@@ -55,6 +55,7 @@ experiment:
   #gallery: {}
   #score_aggregator:
   #  - max_max
+
   #name: sface_anonymizers_no_aggregation
   #samples:
   #  frame_anonymizer:
@@ -69,17 +70,39 @@ experiment:
   #gallery: {}
   #score_aggregator:
   #  - max_max
-  name: ghostfacenet_anonymizers_no_aggregation
+
+  #name: ghostfacenet_anonymizers_no_aggregation
+  #samples:
+  #  frame_anonymizer:
+  #    - none
+  #    - gaussianblur
+  #    - blackbar
+  #    - pixelation
+  #  frame_aggregator: video_none
+  #  frame_recognizer:
+  #    - ghostfacenet
+  #  embedding_aggregator: video_none
+  #gallery: {}
+  #score_aggregator:
+  #  - max_max
+
+  name: arcface_anonymizers_frame_aggregation
   samples:
     frame_anonymizer:
       - none
       - gaussianblur
       - blackbar
       - pixelation
-    frame_aggregator: video_none
-    frame_recognizer:
-      - ghostfacenet
+    frame_aggregator:
+      - video_none
+      - video_facial
+    frame_recognizer: arcface
     embedding_aggregator: video_none
-  gallery: {}
+  gallery:
+    frame_aggregator:
+      - video_none
+      - video_facial
   score_aggregator:
-    - max_max
+      - max_none
+      - max_mean
+      - max_max

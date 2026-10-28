@@ -1,9 +1,13 @@
 import logging
+import random
+from pathlib import Path
 
 import torch
-from torch import nn
 import torch.nn.functional as fun
+from torch import nn
 
+from meles.common import Images
+from meles.frame_aggregation.aggregator import FrameAggregator
 from meles.frame_aggregation.iresnet import iresnet34
 
 logger = logging.getLogger(__name__)
@@ -189,3 +193,185 @@ class Facial(nn.Module):
         """Everything else: trained from scratch at the normal LR."""
         enc = {id(p) for p in self.encoder.parameters()}
         return [p for p in self.parameters() if id(p) not in enc]
+
+
+# The N the model is trained with. Inference below that is legal -- the aggregator pools with a
+# fixed learned query, so any N runs -- but accuracy falls with it: measured on the w2.0 model,
+# blackbar scored 9.5% at N=1 against 30.5% at N=16, and pixelation 29.0% against 87.0%.
+INFERENCE_FRAMES = 16
+
+# Where 'aggregate_frame' looks for the trained model, under the weights cache.
+CHECKPOINT_DIR = "facial"
+CHECKPOINT_STEM = "facial.voxceleb.curriculum.w2d0"
+
+# The optimiser is two thirds of a full checkpoint and inference never touches it, so the export
+# is preferred where both exist -- 190 MB against 467 MB for identical weights.
+CHECKPOINT_SUFFIXES = (".inference.pt", ".pt")
+
+
+def facial_checkpoint_path(directory: str | Path | None = None) -> Path:
+    """
+    The conventional file for the trained aggregator.
+
+    Unlike pix2pix there is **one** model rather than one per anonymization: ``Facial`` is
+    conditioned on which method its inputs carry, so the same weights serve every branch of the
+    sweep and the anonymization selects an embedding rather than a file.
+
+    :param directory: The directory to look in, defaulting to ``<weights cache>/facial``
+    :return: The first existing candidate, or the inference export's path if neither is there
+    """
+    from meles import weights
+
+    root = Path(directory) if directory is not None else weights.cache_dir() / CHECKPOINT_DIR
+    candidates = [root / (CHECKPOINT_STEM + suffix) for suffix in CHECKPOINT_SUFFIXES]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+class FacialFrameAggregator(FrameAggregator):
+    """
+    The trained ``Facial`` model as a frame aggregator: many anonymized frames in, one clear-ish
+    face out.
+
+    This is a **real aggregation**, unlike the ``frame_*`` de-anonymizations beside it. It returns
+    a single frame per group however many it was given, so ``aggregate_frame`` numbers the result
+    rather than keeping an original name, and the group's ``len`` changes.
+
+    It takes the anonymization its inputs carry because the model is conditioned on it -- one
+    model covers all four methods, and the wildcard picks the embedding. Passing the wrong one
+    produces plausible frames scored against the wrong conditioning, which is why this is resolved
+    from the job's ``{frame_anonymization}`` rather than from the aggregator key.
+
+    **The weights load on first use, not in the constructor**, for the same reason as
+    ``Pix2PixFrameAggregator``: ``resolve`` runs before a job knows whether its output is stale.
+
+    Two mismatches against training are worth knowing, because both cost accuracy and neither
+    fails loudly:
+
+    - training aligned its crops using a detection run on the **clear** frame, which an attacker
+      does not have. Here detection runs on the anonymized frame and falls back to the whole frame
+      when it finds nothing, matching what ``embed_frame`` does with ``on_missing="whole_frame"``.
+    - a group here is one identity-video, so all N frames come from a **single** video, where a
+      training item spanned ~14. Frames of one video sit at 0.78 mean cosine against 0.42 across
+      videos, so a group is closer to one observation repeated than to N independent ones. Expect
+      materially lower numbers than the notebook's, and read them as a video-scope result.
+    """
+
+    def __init__(
+        self,
+        anonymizer: str,
+        directory: str | Path | None = None,
+        frames: int = INFERENCE_FRAMES,
+        seed: int = 0,
+        device: str | torch.device | None = None,
+    ):
+        """
+        :param anonymizer: The key in ``meles.anonymization.ANONYMIZERS`` the frames carry, which
+            selects the model's method conditioning
+        :param directory: Where the checkpoint is, defaulting to ``<weights cache>/facial``
+        :param frames: How many frames to draw from a group, matching the trained N
+        :param seed: Seeds the draw, so a rerun aggregates the same frames
+        :param device: Where to run, defaulting to CUDA when available
+        """
+        super().__init__()
+        self.anonymizer = anonymizer
+        self.directory = directory
+        self.frames = frames
+        self.seed = seed
+        self.device = device
+        self._model = None
+        # Empty rather than None: 'model' fills it, and every read happens after that.
+        self._methods: list[str] = []
+
+    def path(self) -> Path:
+        """
+        :return: The checkpoint to read
+        :raises FileNotFoundError: If it is not there
+        """
+        path = facial_checkpoint_path(self.directory)
+        if not path.exists():
+            from meles import weights
+
+            raise FileNotFoundError(
+                f"No trained Facial model at {path} (or its '.pt' fallback). Train it with "
+                f"src/notebooks/06_facial.ipynb and copy the checkpoint there, or point "
+                f"{weights.CACHE_ENV} at where it is."
+            )
+        return path
+
+    @property
+    def model(self):
+        """
+        The trained model, loaded once on first use.
+
+        :return: The model in eval mode
+        :raises ValueError: If the checkpoint was not trained on this aggregator's anonymization
+        """
+        if self._model is None:
+            # Imported here rather than at module scope: 'meles.training.facial' imports the
+            # networks from *this* module, so a top-level import would be circular -- and it
+            # would pull the trainer into every job that merely resolves a registry.
+            from meles.training.facial import load_facial
+
+            model, metadata = load_facial(self.path(), device=self.device)
+            methods = list(metadata["methods"])
+            if self.anonymizer not in methods:
+                raise ValueError(
+                    f"{self.path()} was trained on {methods}, which does not include "
+                    f"{self.anonymizer!r}; it cannot condition on an anonymization it never saw"
+                )
+            self._model, self._methods = model, methods
+            logger.info(
+                "Loaded Facial aggregator",
+                extra={"path": str(self.path()), "epoch": metadata.get("epoch"), "methods": methods},
+            )
+        return self._model
+
+    def draw(self, images: Images) -> Images:
+        """
+        The ``frames`` images one reconstruction is built from.
+
+        Seeded, so the same group yields the same draw on a rerun. A group holding fewer than N
+        repeats rather than shrinking the input: the model takes a fixed N, and a repeated
+        observation is a truthful item -- the attacker simply saw less.
+
+        :param images: Every frame of the group
+        :return: Exactly ``frames`` images
+        """
+        draw = random.Random(self.seed + len(images))
+        if len(images) >= self.frames:
+            return draw.sample(list(images), self.frames)
+        return draw.choices(list(images), k=self.frames)
+
+    def aggregate(self, images: Images) -> Images:
+        """
+        Collapse a group of anonymized frames into one reconstructed face.
+
+        :param images: The group's frames, BGR uint8 at their native resolution
+        :return: A single 112x112 BGR frame, or an empty list if the group was empty
+        """
+        if not images:
+            return []
+
+        import torch
+
+        from meles.detection import TEMPLATE_SIZE, default_detector, prepare_face, whole_frame
+        from meles.frame_aggregation.pix2pix import to_image, to_tensor
+        from meles.training.facial import reconstruct
+
+        crops = []
+        for image in self.draw(images):
+            area = default_detector.detect_best(image)
+            # A frame with no detectable face is still an observation: black bars are supposed to
+            # destroy the face, and dropping those frames would change what the sweep scores.
+            crops.append(
+                prepare_face(image, area, TEMPLATE_SIZE) if area is not None else whole_frame(image, TEMPLATE_SIZE)[0]
+            )
+
+        batch = torch.stack([to_tensor(crop, TEMPLATE_SIZE) for crop in crops])
+        # Bound first: reading 'model' is what loads the checkpoint and fills '_methods'.
+        model = self.model
+        produced = reconstruct(model, batch, self._methods.index(self.anonymizer), device=self.device)
+        return [to_image(produced[0])]

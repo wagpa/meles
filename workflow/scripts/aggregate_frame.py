@@ -7,6 +7,7 @@ from tqdm import tqdm
 from typing import TYPE_CHECKING
 
 from meles.common import Images
+from meles.frame_aggregation.facial import FacialFrameAggregator
 from meles.frame_aggregation.pix2pix import Pix2PixFrameAggregator
 from meles.runtime import logs, runtime
 from meles.frame_aggregation import resample
@@ -69,6 +70,15 @@ AGGREGATORS = {
 # noinspection SpellCheckingInspection
 TARGETED_AGGREGATORS = {
     "frame_pix2pix": Pix2PixFrameAggregator,
+    # No 'frame_' prefix, because unlike the two above this one really aggregates: it returns a
+    # single reconstruction per group however many frames it was given, so the group collapses and
+    # 'aggregate_frame' numbers the result instead of keeping an original frame name.
+    #
+    # It is targeted for a different reason than pix2pix. pix2pix has one model per anonymization
+    # and the wildcard picks the *file*; Facial has one model for all four and the wildcard picks
+    # the *conditioning embedding*. Either way the anonymization has to come from the job rather
+    # than the key, so that a leg cannot quietly condition on frames it was not given.
+    "facial": FacialFrameAggregator,
 }
 
 
