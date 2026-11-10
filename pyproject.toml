@@ -1,0 +1,80 @@
+[project]
+name = "meles"
+version = "0.1.0"
+description = "Reversing video anonymization via aggregation attacks"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "click>=8.4.2",
+    "fastparquet>=2026.5.0",
+    "gdown>=6.2.0",
+    "matplotlib>=3.11.0",
+    "numpy>=2.5.1",
+    "onnx>=1.17.0",
+    # onnxruntime-gpu 1.27 switched the PyPI wheels from CUDA 12 to CUDA 13, so from
+    # that version on it depends on nvidia-cudnn-cu13 -- the very package torch cu130
+    # already pulls in. An older (CUDA 12) build would put a second libcudnn.so.9 into
+    # site-packages alongside torch's, which is the class of conflict that made
+    # TensorFlow unusable here in the first place. Hence the hard 1.29 floor.
+    "onnxruntime-gpu>=1.29.0",
+    # cv2.FaceDetectorYN (YuNet) and cv2.FaceRecognizerSF both live in the main
+    # opencv-python package, so opencv-contrib-python is not needed. Kept below 5
+    # deliberately: OpenCV 5 replaces the whole DNN engine and the YuNet weights we
+    # use (face_detection_yunet_2023mar.onnx) have a fixed input shape, where OpenCV 5
+    # expects the dynamic-shape face_detection_yunet_2026may.onnx. Lifting this bound
+    # is a two-line change once that model is adopted.
+    "opencv-python>=4.14.0.94,<5",
+    "pandas==2.3.3",
+    "pandas-stubs~=2.3.3",
+    "pyarrow>=25.0.0",
+    "scikit-learn>=1.9.0",
+    "seaborn>=0.13.2",
+    # VoxCeleb2's video is no longer distributed by VGG ("the video files ... are no longer
+    # available from this website"), so src/notebooks/08 pulls it from the ProgramComputer/voxceleb
+    # mirror. 2.0 is the floor because the transfer backend changed there: hf_transfer and its
+    # HF_HUB_ENABLE_HF_TRANSFER flag are gone, replaced by Xet (pulled in as hf-xet) and
+    # HF_XET_HIGH_PERFORMANCE, which is what the notebook sets for the 50 GiB archives.
+    "huggingface-hub>=2.0.0",
+    "snakemake>=9.23.1",
+    "snakevision>=1.1.0",
+    # Not imported by the pipeline: inference runs on ONNX Runtime. Kept for the
+    # CUDA 13 stack and any future torch-native embedder backend.
+    "torch>=2.13.0",
+    "torchvision>=0.28.0",
+    "tqdm>=4.68.3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "jupyterlab",
+    "ipykernel",
+    "nbstripout",
+    "ty>=0.0.53",
+    "ruff>=0.15.19",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/meles"]
+include = ["src/meles/py.typed"]
+
+[tool.ruff]
+# The default of 88 was never met by this codebase (its widest existing line is 126), which
+# left 'ruff check' reporting hundreds of line-length violations and so reporting nothing
+# useful. This matches the width the code is actually written to.
+line-length = 120
+builtins = ["snakemake"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["src/tests"]
+markers = [
+    "weights: needs the model weights in the cache (downloads them on first run)",
+    "dataset: needs data/ytfaces.parquet and its frames",
+]
