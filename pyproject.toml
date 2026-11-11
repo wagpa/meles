@@ -49,6 +49,10 @@ dev = [
     "pytest",
     "jupyterlab",
     "ipykernel",
+    # tqdm renders a widget bar per task when this is present, which is the only way several
+    # concurrent bars stack in a notebook: the text fallback positions them with ANSI cursor
+    # moves, which the Jupyter output area does not honour.
+    "ipywidgets",
     "nbstripout",
     "ty>=0.0.53",
     "ruff>=0.15.19",
