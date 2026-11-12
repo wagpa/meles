@@ -77,12 +77,20 @@ class Encoder(nn.Module):
 class Aggregator(nn.Module):
     """N feature maps in, one out. A single transformer block: cross-attention, then a feed-forward."""
 
-    def __init__(self, channels: int = CHANNELS, heads: int = 8, grid: int = GRID, ff_mult: int = 4) -> None:
+    def __init__(
+        self, channels: int = CHANNELS, heads: int = 8, grid: int = GRID, ff_mult: int = 4, methods: int = 0
+    ) -> None:
         """
         :param channels: Channels in the feature maps
         :param heads: Attention heads
         :param grid: Side length of the feature grid
         :param ff_mult: How much wider the feed-forward layer is than the channels
+        :param methods: How many anonymizations one model covers. The query is otherwise a single
+            learned constant, identical for every input, so one model covering several
+            degradations would have to serve them all from one starting point - and undoing a blur
+            is not the same operation as inventing a face behind a black bar. A learned embedding
+            per method, added to the query, is the cheapest way to let it specialise. 0 keeps the
+            unconditional query, which is right when one model is trained per anonymization
         """
         super().__init__()
         self.grid = grid
@@ -90,6 +98,11 @@ class Aggregator(nn.Module):
         # where in the face a token came from. The queries are the same shape: one per output cell.
         self.position = nn.Parameter(torch.randn(1, grid * grid, channels) * 0.02)
         self.query = nn.Parameter(torch.randn(1, grid * grid, channels) * 0.02)
+        # Zero-initialised, so an untrained conditional model starts out exactly as the
+        # unconditional one rather than with the query displaced at random.
+        self.method = nn.Embedding(methods, channels) if methods else None
+        if self.method is not None:
+            nn.init.zeros_(self.method.weight)
 
         self.attention = nn.MultiheadAttention(channels, heads, batch_first=True)
         self.norm_query = nn.LayerNorm(channels)
@@ -101,15 +114,18 @@ class Aggregator(nn.Module):
             nn.Linear(channels * ff_mult, channels),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, method: torch.Tensor | None = None) -> torch.Tensor:
         """
         :param x: The frames' feature maps, (B, N, C, H, W)
+        :param method: Which anonymization each item carries, (B,), or None when unconditional
         :return: One feature map per item, (B, C, H, W)
         """
         batch, frames, channels, height, width = x.shape
         tokens = x.flatten(0, 1).flatten(2).transpose(1, 2) + self.position  # (B*N, H*W, C)
         tokens = tokens.reshape(batch, frames * height * width, channels)  # every frame at once
         query = self.query.expand(batch, -1, -1)
+        if self.method is not None and method is not None:
+            query = query + self.method(method).unsqueeze(1)  # broadcast over the grid
 
         pooled = (
             query
@@ -205,24 +221,29 @@ class Decoder(nn.Module):
 class AggFace(nn.Module):
     """The whole model: encode every frame, pool them into one map, decode a face from it."""
 
-    def __init__(self, pretrained: bool = True, width: float = 1.0, dropout: float = 0.0) -> None:
+    def __init__(self, methods: int = 0, pretrained: bool = True, width: float = 1.0, dropout: float = 0.0) -> None:
         """
         ``width`` and ``dropout`` size and regularise the decoder, and **they change the parameter
         shapes**, so a checkpoint and the model reading it have to agree on them.
 
+        :param methods: How many anonymizations one model covers, conditioning the aggregator's
+            query on which one its inputs carry. The anonymization is known at inference - a sweep
+            leg names it - so supplying it is not information the attacker would lack
         :param pretrained: Whether the encoder starts from the recognition weights
         :param width: Decoder width multiplier
         :param dropout: Decoder channel dropout
         """
         super().__init__()
         self.encoder_frozen = False
+        self.methods = methods
         self.encoder = Encoder(pretrained=pretrained)
-        self.aggregator = Aggregator()
+        self.aggregator = Aggregator(methods=methods)
         self.decoder = Decoder(width=width, dropout=dropout)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, method: torch.Tensor | None = None) -> torch.Tensor:
         """
         :param x: The anonymized frames of one item, (B, N, 3, 112, 112), RGB in [-1, 1]
+        :param method: Which anonymization each item carries, (B,), or None when unconditional
         :return: The reconstructed face, (B, 3, 112, 112), RGB in [-1, 1]
         """
         batch, frames = x.shape[:2]
@@ -231,7 +252,7 @@ class AggFace(nn.Module):
                 encoded = self.encoder(x.flatten(0, 1))
         else:
             encoded = self.encoder(x.flatten(0, 1))
-        return self.decoder(self.aggregator(encoded.view(batch, frames, *encoded.shape[1:])))
+        return self.decoder(self.aggregator(encoded.view(batch, frames, *encoded.shape[1:]), method))
 
     def train(self, mode: bool = True) -> "AggFace":
         """
