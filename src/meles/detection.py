@@ -74,7 +74,7 @@ class YuNetDetector(Detector):
     constructing a detector free for code that may never call it.
     """
 
-    def __init__(self, spec: weights.WeightSpec = YUNET):
+    def __init__(self, spec: weights.WeightSpec = YUNET) -> None:
         """
         :param spec: The weights to run
         """

@@ -72,9 +72,16 @@ include = ["src/meles/py.typed"]
 # useful. This matches the width the code is actually written to.
 line-length = 120
 builtins = ["snakemake"]
+# The previous tree, kept for reference while it is replaced piece by piece. Linting it buries
+# findings in the code that is actually being written.
+extend-exclude = ["_src"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP"]
+# ANN requires every function to annotate its arguments and its return type, so a reader never
+# has to infer a signature. ANN401 is off because the lazily built OpenCV detector has no type
+# more precise than Any.
+select = ["ANN", "E", "F", "I", "UP"]
+ignore = ["ANN401"]
 
 [tool.pytest.ini_options]
 testpaths = ["src/tests"]

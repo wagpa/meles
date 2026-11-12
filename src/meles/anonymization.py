@@ -56,7 +56,7 @@ class NoAnonymizer(Anonymizer):
 class GaussianBlurAnonymizer(Anonymizer):
     """Blurs the face with a kernel sized as a fraction of the face itself."""
 
-    def __init__(self, strength: float = 0.25):
+    def __init__(self, strength: float = 0.25) -> None:
         """
         :param strength: The blur kernel as a fraction of the longer side of the face box
         """
@@ -77,7 +77,7 @@ class GaussianBlurAnonymizer(Anonymizer):
 class PixelationAnonymizer(Anonymizer):
     """Reduces the face to a fixed number of blocks across, whatever its size in pixels."""
 
-    def __init__(self, blocks: int = 8):
+    def __init__(self, blocks: int = 8) -> None:
         """
         :param blocks: How many blocks the face is reduced to along each axis
         """
