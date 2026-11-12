@@ -14,6 +14,10 @@ Two choices about how an item is built are worth knowing, because both differ fr
 - The anonymization is applied at the frame's **native resolution**, before alignment. Blurring a
   112x112 crop instead would produce a radius the model never meets again at inference.
 
+The face areas are **computed once and passed in**, never detected here. Detecting lazily meant
+every data loader worker ran a detector and cached its results, which grew without bound across
+epochs; reading a table instead keeps a worker's memory flat and its work to decoding images.
+
 One model covers every anonymization, and they are introduced as a curriculum - clear frames
 first, then progressively harsher ones. The hardest of them removes the face outright, so a model
 shown black bars from the first epoch has no signal to learn an identity from, while one that
@@ -38,7 +42,7 @@ from torch.utils.data import Dataset
 from aggface.tensors import to_tensor
 from meles.alignment import TEMPLATE_SIZE, align_face, letterbox
 from meles.anonymization import Anonymizer, resolve
-from meles.detection import Detector, FacialArea, default_detector
+from meles.detection import FacialArea
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +52,10 @@ logger = logging.getLogger(__name__)
 # because it removes the face rather than obscuring it: there is no inverse to learn, only a prior
 # over what the other frames imply.
 CURRICULUM: tuple[str, ...] = ("none", "gaussianblur", "pixelation", "blackbar")
+
+# The columns an area table carries, beside 'path'.
+AREA_COLUMNS = ("x", "y", "w", "h", "found")
+LANDMARK_COLUMNS = tuple(f"{axis}{point}" for point in range(5) for axis in ("lx", "ly"))
 
 
 class Items(Dataset):
@@ -68,13 +76,13 @@ class Items(Dataset):
         self,
         structure: pd.DataFrame,
         targets: pd.DataFrame,
+        areas: pd.DataFrame,
         root: Path,
         identities: list[str] | None = None,
         curriculum: tuple[str, ...] = CURRICULUM,
         stage: int = 0,
         frames: int = 8,
         size: int = TEMPLATE_SIZE,
-        detector: Detector = default_detector,
         flip: bool = True,
         deterministic: bool = False,
         all_methods: bool = False,
@@ -85,6 +93,8 @@ class Items(Dataset):
             the observations the attacker gets
         :param targets: One row per identity, with ``identity``, ``video`` and ``path``: the frame
             the decoder should produce
+        :param areas: One row per frame with ``path`` and the face found in it, as the columns
+            ``x, y, w, h, found`` and the ten landmark coordinates
         :param root: What the ``path`` column is relative to, the ``data`` directory
         :param identities: Which identities this split covers, or None for every identity that
             has a target
@@ -95,7 +105,6 @@ class Items(Dataset):
         :param frames: How many anonymized frames make up one item, ``N``. Fixed, because a batch
             has to stack them; the aggregator itself is indifferent to it
         :param size: The square edge of every crop
-        :param detector: The detector that locates the face, the same one the pipeline uses
         :param flip: Whether to mirror at random. One draw per item, applied to the target and all
             N inputs together, because mirroring one end would ask the decoder for a face its
             inputs do not show
@@ -107,7 +116,7 @@ class Items(Dataset):
             The other half of what a validation split wants: it pairs the comparison, so every
             method sees the same identity on the same frames
         :param seed: Seeds the per-item draw under ``deterministic``
-        :raises ValueError: If the curriculum is empty
+        :raises ValueError: If the curriculum is empty, or a frame has no area
         """
         if not curriculum:
             raise ValueError("The curriculum needs at least one anonymization")
@@ -117,39 +126,52 @@ class Items(Dataset):
         self.root = Path(root)
         self.frames = frames
         self.size = size
-        self.detector = detector
         self.flip = flip
         self.deterministic = deterministic
         self.all_methods = all_methods
         self.seed = seed
 
-        self.target: dict[str, str] = dict(zip(targets["identity"], targets["path"]))
+        target_path = dict(zip(targets["identity"], targets["path"]))
         target_video = dict(zip(targets["identity"], targets["video"]))
-        target_paths = set(self.target.values())
-        wanted = set(self.target) if identities is None else set(identities) & set(self.target)
+        wanted = set(target_path) if identities is None else set(identities) & set(target_path)
 
-        # The frames each identity's inputs are drawn from, grouped by video. Resolved once, so
-        # '__getitem__' only samples from lists.
-        self.videos: dict[str, list[list[str]]] = {}
-        for identity, group in structure[structure["identity"].isin(list(wanted))].groupby("identity"):
+        # One table of every frame these identities own, joined with its face. Held as plain
+        # arrays rather than per-path dictionaries, so a forked worker carries tens of megabytes
+        # instead of millions of Python objects.
+        mine = structure[structure["identity"].isin(list(wanted))].merge(areas, on="path", how="left")
+        if mine["found"].isna().any():
+            missing = int(mine["found"].isna().sum())
+            raise ValueError(f"{missing} frames have no entry in the area table")
+
+        self.paths: NDArray[np.object_] = mine["path"].to_numpy()
+        self.boxes: NDArray[np.int32] = mine[list(AREA_COLUMNS[:4])].to_numpy(dtype=np.int32)
+        self.landmarks: NDArray[np.float32] = mine[list(LANDMARK_COLUMNS)].to_numpy(dtype=np.float32).reshape(-1, 5, 2)
+        self.found: NDArray[np.bool_] = mine["found"].to_numpy(dtype=bool)
+
+        # Row indices rather than paths: the draw only ever needs to pick numbers.
+        rows = np.arange(len(mine))
+        self.videos: dict[str, list[NDArray[np.int64]]] = {}
+        self.target: dict[str, int] = {}
+        for identity, group in mine.assign(row=rows).groupby("identity"):
+            name = str(identity)
+            where = group.index[group["path"] == target_path[name]]
+            if len(where) == 0:
+                continue
+            self.target[name] = int(group.loc[where[0], "row"])
+
             # The target's own video is left out, so the model cannot rebuild the target from its
             # own shot's background and lighting rather than from the face.
-            group = group[(group["video"] != target_video[identity]) & ~group["path"].isin(target_paths)]
-            if not group.empty:
-                self.videos[str(identity)] = [list(shot["path"]) for _, shot in group.groupby("video", sort=True)]
+            pool = group[group["video"] != target_video[name]]
+            if not pool.empty:
+                self.videos[name] = [shot["row"].to_numpy() for _, shot in pool.groupby("video", sort=True)]
 
         self.identities = sorted(self.videos)
         dropped = len(wanted) - len(self.identities)
         if dropped:
-            logger.warning("Identities have no input frames left and were dropped", extra={"dropped": dropped})
+            logger.warning("Identities have no input frames or no target and were dropped", extra={"dropped": dropped})
 
         self.stage = 0
         self.set_stage(stage)
-
-        # Detection is otherwise repeated for every frame in every epoch. Held per instance, so
-        # with 'num_workers > 0' each worker warms its own copy.
-        self.areas: dict[str, FacialArea | None] = {}
-        self.undetected = 0
 
     def __len__(self) -> int:
         return len(self.identities) * (self.stage + 1 if self.all_methods else 1)
@@ -184,6 +206,45 @@ class Items(Dataset):
         self.stage = stage
         return self.active
 
+    def area(self, row: int) -> FacialArea | None:
+        """
+        :param row: The frame's row in the area arrays
+        :return: The face found in that frame, or None if there was none
+        """
+        if not self.found[row]:
+            return None
+        x, y, w, h = (int(value) for value in self.boxes[row])
+        return FacialArea(x=x, y=y, w=w, h=h, landmarks=self.landmarks[row], confidence=0.0)
+
+    def draw(self, identity: str, source: random.Random) -> list[int]:
+        """
+        The rows of the ``frames`` frames one item is built from, spread across the identity's
+        videos.
+
+        Round-robin rather than uniform: frames of one video are near duplicates, so a uniform
+        draw can hand the aggregator N copies of one observation, which is the premise of the
+        experiment not being exercised. An identity with fewer frames than N repeats rather than
+        shrinking - the model takes a fixed N, and a repeated observation is a truthful item,
+        since the attacker simply saw less.
+
+        :param identity: Whose frames to draw
+        :param source: The random source, seeded under ``deterministic``
+        :return: Exactly ``frames`` row indices
+        """
+        shots = [list(shot) for shot in self.videos[identity]]
+        source.shuffle(shots)
+        for shot in shots:
+            source.shuffle(shot)
+
+        chosen: list[int] = []
+        while len(chosen) < self.frames:
+            served = [shot.pop() for shot in shots if shot]
+            if not served:
+                pool = [row for shot in self.videos[identity] for row in shot]
+                return chosen + source.choices(pool, k=self.frames - len(chosen))
+            chosen.extend(served[: self.frames - len(chosen)])
+        return [int(row) for row in chosen]
+
     def read(self, path: str) -> NDArray[np.uint8]:
         """
         :param path: The ``path`` column's value, relative to ``root``
@@ -195,60 +256,18 @@ class Items(Dataset):
             raise FileNotFoundError(f"Could not read frame {self.root / path}")
         return np.asarray(image, dtype=np.uint8)
 
-    def area(self, path: str, image: NDArray[np.uint8]) -> FacialArea | None:
-        """
-        Where the face is, detected on the clear frame and remembered.
-
-        :param path: The frame's path, the cache key
-        :param image: The clear frame, BGR
-        :return: The detected face, or None if there is none
-        """
-        if path not in self.areas:
-            self.areas[path] = self.detector.detect(image)
-            if self.areas[path] is None:
-                self.undetected += 1
-        return self.areas[path]
-
-    def draw(self, identity: str, source: random.Random) -> list[str]:
-        """
-        The ``frames`` paths one item is built from, spread across the identity's videos.
-
-        Round-robin rather than uniform: frames of one video are near duplicates, so a uniform
-        draw can hand the aggregator N copies of one observation, which is the premise of the
-        experiment not being exercised. An identity with fewer frames than N repeats rather than
-        shrinking - the model takes a fixed N, and a repeated observation is a truthful item,
-        since the attacker simply saw less.
-
-        :param identity: Whose frames to draw
-        :param source: The random source, seeded under ``deterministic``
-        :return: Exactly ``frames`` paths
-        """
-        shots = [list(shot) for shot in self.videos[identity]]
-        source.shuffle(shots)
-        for shot in shots:
-            source.shuffle(shot)
-
-        chosen: list[str] = []
-        while len(chosen) < self.frames:
-            served = [shot.pop() for shot in shots if shot]
-            if not served:
-                pool = [path for shot in self.videos[identity] for path in shot]
-                return chosen + source.choices(pool, k=self.frames - len(chosen))
-            chosen.extend(served[: self.frames - len(chosen)])
-        return chosen
-
-    def crop(self, path: str, method: int | None, flip: bool) -> NDArray[np.uint8]:
+    def crop(self, row: int, method: int | None, flip: bool) -> NDArray[np.uint8]:
         """
         One aligned crop, anonymized or clear.
 
-        :param path: The frame to load
+        :param row: The frame's row in the area arrays
         :param method: The index into the curriculum of the anonymization to apply, or None to
             leave the frame clear, which is what the target wants
         :param flip: Whether to mirror the crop
         :return: The crop, ``(size, size, 3)`` BGR uint8
         """
-        clear = self.read(path)
-        area = self.area(path, clear)
+        clear = self.read(str(self.paths[row]))
+        area = self.area(row)
 
         if area is None:
             # No face to anonymize or align on. Measured at essentially zero on this corpus, so
@@ -275,12 +294,11 @@ class Items(Dataset):
         identity = self.identities[position]
 
         # Seeded by position under 'deterministic' so a validation item is the same every epoch.
-        # Otherwise the module-level generator, which a DataLoader reseeds per worker.
         source = random.Random(self.seed + position) if self.deterministic else random.Random()
         chosen = self.draw(identity, source)
         method = source.randrange(self.stage + 1) if fixed is None else fixed
         flip = self.flip and not self.deterministic and source.random() > 0.5
 
-        anonymized = [to_tensor(self.crop(path, method, flip), self.size) for path in chosen]
+        anonymized = [to_tensor(self.crop(row, method, flip), self.size) for row in chosen]
         clear = to_tensor(self.crop(self.target[identity], None, flip), self.size)
         return stack(anonymized), clear, method

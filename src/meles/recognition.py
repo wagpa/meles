@@ -226,6 +226,24 @@ class FrameEmbedder:
             batch = np.ascontiguousarray(batch.transpose(0, 2, 3, 1))
         return batch.astype(np.float32, copy=False)
 
+    def embed_crops(self, crops: Sequence[NDArray[np.uint8]]) -> NDArray[np.float32]:
+        """
+        Embed crops that are already aligned, without detecting anything.
+
+        Split into batches of ``batch_size``. One call for an arbitrary number of crops would ask
+        the runtime for a single buffer holding every intermediate activation: at 112x112 the
+        first convolution alone needs 802 kB per crop, so a few hundred crops is most of a
+        gigabyte in one allocation.
+
+        :param crops: The aligned crops, BGR, each (input_size, input_size, 3)
+        :return: The embeddings with shape (len(crops), output_dim)
+        """
+        embeddings: NDArray[np.float32] = np.empty((len(crops), self.spec.output_dim), dtype=np.float32)
+        for start in range(0, len(crops), self.batch_size):
+            stop = min(start + self.batch_size, len(crops))
+            embeddings[start:stop] = self.session.run(self.blob(crops[start:stop]))
+        return embeddings
+
     def embed(
         self,
         frames: Sequence[Frame],
