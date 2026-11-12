@@ -37,15 +37,18 @@ class WeightSpec:
     A cached weight file: where it ends up, where it comes from, and how to check it.
 
     :param file_name: The name the file is cached under
-    :param url: The URL to download it from
+    :param url: The URL to download it from, or None when the file has no public download and
+        has to be placed in the cache by hand
     :param sha256: The expected digest of the download, verified before the file is used
     :param archive_member: The member to extract, when the download is a zip archive
+    :param source: Where the file comes from, shown when it is missing and cannot be fetched
     """
 
     file_name: str
-    url: str
+    url: str | None = None
     sha256: str | None = None
     archive_member: str | None = None
+    source: str | None = None
 
 
 def cache_dir() -> Path:
@@ -82,10 +85,17 @@ def resolve(spec: WeightSpec) -> Path:
     :param spec: The weight file to resolve
     :return: The path to the complete, verified file
     :raises ValueError: If the download does not match its expected digest
+    :raises FileNotFoundError: If the file has no download and is not in the cache
     """
     target = cache_dir() / spec.file_name
     if target.is_file():
         return target
+
+    if spec.url is None:
+        raise FileNotFoundError(
+            f"{spec.file_name} is not in {cache_dir()} and cannot be downloaded. "
+            + (f"Get it from {spec.source} and put it there." if spec.source else "Put it there by hand.")
+        )
 
     target.parent.mkdir(parents=True, exist_ok=True)
 

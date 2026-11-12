@@ -73,8 +73,9 @@ include = ["src/meles/py.typed"]
 line-length = 120
 builtins = ["snakemake"]
 # The previous tree, kept for reference while it is replaced piece by piece. Linting it buries
-# findings in the code that is actually being written.
-extend-exclude = ["_src"]
+# findings in the code that is actually being written. 'iresnet.py' is vendored unchanged from
+# upstream so that it keeps loading upstream checkpoints; formatting it would be a silent fork.
+extend-exclude = ["_src", "src/aggface/iresnet.py"]
 
 [tool.ruff.lint]
 # ANN requires every function to annotate its arguments and its return type, so a reader never
