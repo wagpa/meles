@@ -231,6 +231,10 @@ logs
 # Local uv cache, only used when the default cache directory is not writable
 /.uv-cache/
 
-# Outputs of the scaled-down verification run (workflow/config.smoke.yaml)
+# Outputs of the scaled-down verification run
 results_smoke
 logs_smoke
+
+# IDE settings
+.idea/
+*.iml
