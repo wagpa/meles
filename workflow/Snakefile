@@ -2,7 +2,7 @@ from pathlib import Path
 
 from meles.experiment import parse_experiment
 
-configfile: "workflow/config.yaml"
+configfile: "workflow/config.anonymizers_aggface.yaml"
 
 RESULT_PATH = Path(config["result_dir"])
 LOG_PATH = Path(config["log_dir"])
