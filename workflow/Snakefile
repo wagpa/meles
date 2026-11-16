@@ -96,7 +96,9 @@ rule anonymize_frame:
 # so later rules do not read the split again.
 # An aggregator returns either its input unchanged (no images written, rows point at the input frames), one frame per
 # input (a frame-wise method: written under the original names, rows keep all their columns), or fewer frames (new
-# rows with the group columns only, numbered frames and no stored face).
+# rows with the group columns only, numbered frames and no stored face). A fold-aware, model-backed aggregator
+# ('aggface') also receives each group's clear-frame faces and this rule's anonymizer; its outputs are aligned crops, so
+# their stored face is the whole 112x112 image with the template landmarks.
 # Input (structure): identity, video, frame, frame_suffix, path, ...
 # Input (split): identity, video, fold
 # Output: identity, video, fold, frame, frame_suffix, path, ...

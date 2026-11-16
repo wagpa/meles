@@ -14,6 +14,8 @@ from numpy.typing import NDArray
 from tqdm.auto import tqdm
 
 from meles import frame_aggregation, grouping, runtime
+from meles.alignment import ARCFACE_TEMPLATE, TEMPLATE_SIZE
+from meles.detection import facial_areas
 from meles.paths import rebase
 
 if TYPE_CHECKING:
@@ -25,6 +27,22 @@ logger = logging.getLogger(__name__)
 
 # Which of the three outcomes a group had.
 REUSED, FRAMEWISE, COLLAPSED = "reused", "framewise", "collapsed"
+
+
+# The area of a frame that is already an aligned crop: the whole image, with the landmarks where the template puts
+# them, so aligning on it again changes nothing.
+ALIGNED_AREA: dict[str, object] = {
+    "found": True,
+    "x": 0,
+    "y": 0,
+    "w": TEMPLATE_SIZE,
+    "h": TEMPLATE_SIZE,
+    **{
+        f"{axis}{point}": float(ARCFACE_TEMPLATE[point, index])
+        for point in range(5)
+        for index, axis in enumerate(("lx", "ly"))
+    },
+}
 
 
 def read(path: Path) -> NDArray[np.uint8]:
@@ -55,6 +73,7 @@ def aggregate_group(
     group: pd.DataFrame,
     columns: list[str],
     aggregator: frame_aggregation.FrameAggregator,
+    anonymization: str,
     input_dir: Path,
     output_dir: Path,
 ) -> tuple[str, pd.DataFrame]:
@@ -64,13 +83,14 @@ def aggregate_group(
     :param group: The group's rows, in frame order
     :param columns: The columns that define a group
     :param aggregator: The aggregation to apply
+    :param anonymization: The key of the anonymization the frames carry
     :param input_dir: The directory the group's paths are relative to
     :param output_dir: The directory the output structure lives in; new images go below it
     :return: The outcome (reused, framewise or collapsed) and the rows of the group's output
     """
     sources = [input_dir / path for path in group["path"]]
     images = [read(source) for source in sources]
-    aggregated = aggregator.aggregate(images)
+    aggregated = aggregator.aggregate(images, facial_areas(group), anonymization)
     first = group.iloc[0]
 
     if unchanged(images, aggregated):
@@ -78,7 +98,8 @@ def aggregate_group(
         rows["path"] = rebase(group["path"], input_dir, output_dir)
         return REUSED, rows
 
-    if len(aggregated) == len(group):
+    # An aligned output is a new face even when it happens to number as many as the input.
+    if len(aggregated) == len(group) and not aggregator.aligned:
         # Frame-wise: every frame keeps its name, so the directory stays comparable to the one it came from.
         targets = [output_dir / first["identity"] / first["video"] / frame for frame in group["frame"]]
         for image, target in zip(aggregated, targets):
@@ -104,10 +125,12 @@ def aggregate_group(
     )
     if "video" not in columns:
         rows["video"] = "*"
+    if aggregator.aligned:
+        rows = rows.assign(**ALIGNED_AREA)
     return COLLAPSED, rows
 
 
-def main(input_path: Path, split_path: Path, output_path: Path, key: str, threads: int) -> None:
+def main(input_path: Path, split_path: Path, output_path: Path, key: str, anonymization: str, threads: int) -> None:
     """
     Write the aggregated frames and a structure pointing at them.
 
@@ -115,6 +138,7 @@ def main(input_path: Path, split_path: Path, output_path: Path, key: str, thread
     :param split_path: The fold of every identity-video
     :param output_path: The structure to write; new images go into its directory
     :param key: The aggregator key, ``{scope}_{method}``
+    :param anonymization: The key of the anonymization the input frames carry
     :param threads: How many groups are processed at once
     """
     columns, method = grouping.resolve_scope(key)
@@ -137,9 +161,16 @@ def main(input_path: Path, split_path: Path, output_path: Path, key: str, thread
         n_groups = len(groups)
         outcomes = []
         parts: list[pd.DataFrame] = []
-        with ThreadPoolExecutor(max_workers=threads) as pool:
+        # A model-backed aggregator owns the device, so its groups run one after another with torch given the
+        # whole budget; `configure_threads` only reaches torch once it has been imported.
+        if aggregator.aligned:
+            import torch
+
+            torch.set_num_threads(threads)
+        with ThreadPoolExecutor(max_workers=1 if aggregator.aligned else threads) as pool:
             futures = pool.map(
-                lambda group: aggregate_group(group, columns, aggregator, input_path.parent, output_dir), groups
+                lambda group: aggregate_group(group, columns, aggregator, anonymization, input_path.parent, output_dir),
+                groups,
             )
             for outcome, rows in tqdm(futures, total=n_groups, unit="group", mininterval=5.0):
                 outcomes.append(outcome)
@@ -173,5 +204,6 @@ if __name__ == "__main__":
         split_path=Path(snakemake.input.split),
         output_path=Path(snakemake.output.structure),
         key=snakemake.wildcards.frame_aggregator,
+        anonymization=snakemake.wildcards.frame_anonymizer,
         threads=threads,
     )

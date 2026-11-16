@@ -21,23 +21,29 @@ split_seed: 0
 # One leg is one way of observing the videos: anonymizer x frame aggregator x recognizer x embedding aggregator.
 # The gallery is what the attacker holds and the samples are what they observe. The gallery leg inherits every
 # field it does not set from the samples leg. A field may be a bare string or a list.
-#   frame_aggregator, embedding_aggregator: '{scope}_{method}', the scope being 'video' or 'identity'
+#   frame_aggregator, embedding_aggregator: '{scope}_{method}', the scope being 'video' or 'identity' (frame
+#                     aggregators only have 'video'); 'aggface' reconstructs one face per group, 'aggface8' one per 8 frames
 #   frame_recognizer: '{detection}_{model}', the detection being 'oracle' (the face stored for the clear frame)
 #                     or 'observed' (detected in the frame the recognizer sees)
 #   score_aggregator: '{gallery collapse}_{prediction aggregation}'
 experiment:
-  name: anonymizers
+  name: anonymizers_aggface
   samples:
     frame_anonymizer:
       - none
       - gaussianblur
       - pixelation
       - blackbar
-    frame_aggregator: video_none
+    frame_aggregator:
+      - video_none
+      - video_aggface
+      - video_aggface8
     frame_recognizer: oracle_arcface
     embedding_aggregator: video_none
   gallery:
     frame_anonymizer: none
+    # Pinned: the clear gallery must not be reconstructed.
+    frame_aggregator: video_none
   score_aggregator:
     - max_none
     - max_mean

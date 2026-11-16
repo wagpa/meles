@@ -18,19 +18,35 @@ them.
 """
 
 from collections.abc import Sequence
-from typing import Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import cv2
 import numpy as np
 from numpy.typing import NDArray
 
+from meles.alignment import align_face, letterbox
+from meles.detection import FacialArea
+
+if TYPE_CHECKING:
+    from aggface.model import AggFace
+
 
 class FrameAggregator(Protocol):
     """Combines the frames of one group into one or more frames."""
 
-    def aggregate(self, images: Sequence[NDArray[np.uint8]]) -> Sequence[NDArray[np.uint8]]:
+    # Whether the output frames are already aligned 112x112 faces rather than frames at their native resolution.
+    aligned: bool = False
+
+    def aggregate(
+        self,
+        images: Sequence[NDArray[np.uint8]],
+        areas: Sequence[FacialArea | None],
+        anonymization: str,
+    ) -> Sequence[NDArray[np.uint8]]:
         """
-        :param images: The group's frames, BGR, at their native resolution
+        :param images: The group's frames, BGR, at their native resolution and already anonymized
+        :param areas: The face found in the clear version of each frame, or None where there was none
+        :param anonymization: The key of the anonymization the frames carry, for aggregators that depend on it
         :return: The frames the group becomes, which may be the input itself when nothing changed
         """
         ...
@@ -39,7 +55,12 @@ class FrameAggregator(Protocol):
 class NoFrameAggregator(FrameAggregator):
     """The baseline: the frames are handed back untouched."""
 
-    def aggregate(self, images: Sequence[NDArray[np.uint8]]) -> Sequence[NDArray[np.uint8]]:
+    def aggregate(
+        self,
+        images: Sequence[NDArray[np.uint8]],
+        areas: Sequence[FacialArea | None],
+        anonymization: str,
+    ) -> Sequence[NDArray[np.uint8]]:
         return images
 
 
@@ -83,7 +104,12 @@ class ResampleFrameAggregator(FrameAggregator):
         restored = cv2.resize(reduced, (width, height), interpolation=self.interpolation)
         return np.asarray(restored, dtype=np.uint8)
 
-    def aggregate(self, images: Sequence[NDArray[np.uint8]]) -> Sequence[NDArray[np.uint8]]:
+    def aggregate(
+        self,
+        images: Sequence[NDArray[np.uint8]],
+        areas: Sequence[FacialArea | None],
+        anonymization: str,
+    ) -> Sequence[NDArray[np.uint8]]:
         return [self.resample(image) for image in images]
 
 
@@ -97,12 +123,82 @@ class BicubicFrameAggregator(ResampleFrameAggregator):
         super().__init__(factor=factor, interpolation=cv2.INTER_CUBIC)
 
 
+class AggFaceFrameAggregator(FrameAggregator):
+    """
+    Reconstructs a face from many anonymized observations of it with a trained AggFace model.
+
+    The frames are aligned on the clear frames' faces and the model turns each run of them into one 112x112
+    face. The model is conditioned on the anonymization, so the attacker is assumed to recognise which one was
+    used. The checkpoint is the one of seed 0 at its best epoch.
+
+    Neither torch nor the model is loaded until the first call, because the registry is built at import time.
+    """
+
+    aligned = True
+
+    def __init__(self, seed: int = 0, frames: int | None = None) -> None:
+        """
+        :param seed: The seed of the trained checkpoint
+        :param frames: How many consecutive frames make one reconstruction, or None for the whole group
+        """
+        self.seed = seed
+        self.frames = frames
+        self._model: AggFace | None = None
+        self._methods: list[str] = []
+
+    def load(self) -> tuple["AggFace", list[str]]:
+        """
+        :return: The model and the anonymizations it was trained on, loaded on first use
+        """
+        if self._model is None:
+            from aggface.model import checkpoint_path
+            from aggface.training import load_model
+
+            checkpoint = checkpoint_path("voxceleb2", self.seed)
+            best = checkpoint.with_suffix(f".best{checkpoint.suffix}")
+            self._model, metadata = load_model(best if best.exists() else checkpoint)
+            self._methods = list(metadata["methods"])
+        return self._model, self._methods
+
+    def aggregate(
+        self,
+        images: Sequence[NDArray[np.uint8]],
+        areas: Sequence[FacialArea | None],
+        anonymization: str,
+    ) -> Sequence[NDArray[np.uint8]]:
+        import torch
+
+        from aggface.tensors import to_image, to_tensor
+        from aggface.training import reconstruct
+
+        model, methods = self.load()
+        method = methods.index(anonymization)
+
+        # The frames are already anonymized, so they are only aligned; a frame without a face is used whole.
+        crops: list[Any] = [
+            letterbox(image) if area is None else align_face(image, area.landmarks)
+            for image, area in zip(images, areas)
+        ]
+        tensors = [to_tensor(crop) for crop in crops]
+
+        step = self.frames or len(tensors)
+        runs = [tensors[start : start + step] for start in range(0, len(tensors), step)]
+        # Runs of equal length go through together; a shorter final run needs a call of its own.
+        batches = [runs] if len({len(run) for run in runs}) == 1 else [[run] for run in runs]
+        reconstructions = [
+            reconstruct(model, torch.stack([torch.stack(run) for run in batch]), method) for batch in batches
+        ]
+        return [to_image(face) for faces in reconstructions for face in faces]
+
+
 # Every frame aggregation the experiment can name. Constructing an entry has to stay free of side
 # effects, because the whole dict is built at import time.
 FRAME_AGGREGATORS: dict[str, FrameAggregator] = {
     "none": NoFrameAggregator(),
     "resample": ResampleFrameAggregator(),
     "bicubic": BicubicFrameAggregator(),
+    "aggface": AggFaceFrameAggregator(),
+    "aggface8": AggFaceFrameAggregator(frames=8),
 }
 
 
