@@ -1,0 +1,43 @@
+# The dataset structure: one row per frame, with at least identity, video, frame, frame_suffix and path
+# (relative to this file).
+dataset: data/voxceleb2.parquet
+# One row per identity with the split (train, validation, test) it belongs to.
+splits: data/voxceleb2_split.parquet
+# The face box and landmarks found in each clear frame, keyed by the dataset's 'path'.
+areas: data/voxceleb2_areas.parquet
+# The split of the identities the experiment runs on.
+subset: test
+# Keep only the first N identities (sorted) of the subset; null keeps all of them (the smoke run keeps 20).
+identities: 20
+
+# Where results and logs are written.
+result_dir: results_smoke
+log_dir: logs_smoke
+
+# The number of folds, and the seed that decides which videos share a fold.
+split_k: 3
+split_seed: 0
+
+# One leg is one way of observing the videos: anonymizer x frame aggregator x recognizer x embedding aggregator.
+# The gallery is what the attacker holds and the samples are what they observe. The gallery leg inherits every
+# field it does not set from the samples leg. A field may be a bare string or a list.
+#   frame_aggregator, embedding_aggregator: '{scope}_{method}', the scope being 'video' or 'identity'
+#   frame_recognizer: '{detection}_{model}', the detection being 'oracle' (the face stored for the clear frame)
+#                     or 'observed' (detected in the frame the recognizer sees)
+#   score_aggregator: '{gallery collapse}_{prediction aggregation}'
+experiment:
+  name: anonymizers
+  samples:
+    frame_anonymizer:
+      - none
+      - gaussianblur
+      - pixelation
+      - blackbar
+    frame_aggregator: video_none
+    frame_recognizer: oracle_arcface
+    embedding_aggregator: video_none
+  gallery:
+    frame_anonymizer: none
+  score_aggregator:
+    - max_none
+    - max_mean

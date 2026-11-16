@@ -90,20 +90,21 @@ class Leg:
     video: NDArray
 
     @classmethod
-    def from_frame(cls, frame: pd.DataFrame) -> "Leg":
+    def from_frame(cls, frame: pd.DataFrame, embeddings: NDArray[np.float32]) -> "Leg":
         """
-        Read a leg out of a structure, sorting it so that both collapses are runs of equal keys.
+        Read a leg out of a structure and its embeddings, sorting so that both collapses are runs of equal keys.
 
         Sorting here rather than relying on the upstream order keeps the contract local: both
         collapses reduce over contiguous runs, which is what makes them one vectorised call each.
 
-        :param frame: A structure with 'identity', 'video' and 'embedding' columns
+        :param frame: A structure with 'identity' and 'video' columns
+        :param embeddings: The structure's embeddings, shape (len(frame), dim), aligned by row order
         :return: The leg, sorted by identity then video
         """
-        ordered = frame.sort_values(["identity", "video"], kind="stable")
-        embeddings = np.vstack(ordered["embedding"].to_numpy()).astype(np.float32)
+        # Positional index, so the sorted order can be applied to the embeddings.
+        ordered = frame.reset_index(drop=True).sort_values(["identity", "video"], kind="stable")
         return cls(
-            embeddings=normalized(embeddings),
+            embeddings=normalized(np.asarray(embeddings)[ordered.index.to_numpy()]),
             identity=ordered["identity"].to_numpy(),
             video=ordered["video"].to_numpy(),
         )
@@ -275,7 +276,9 @@ def score_fold(
 
 def score_folds(
     gallery: pd.DataFrame,
+    gallery_embeddings: NDArray[np.float32],
     samples: pd.DataFrame,
+    samples_embeddings: NDArray[np.float32],
     collapse: np.ufunc,
     prediction: PredictionAggregator,
     ranks: tuple[int, ...] = RANKS,
@@ -290,8 +293,10 @@ def score_folds(
     per-fold means would weight them unequally. Emitting one row per video and letting the reader
     take a single mean is what keeps that mistake unavailable.
 
-    :param gallery: The gallery leg, with 'identity', 'video', 'fold' and 'embedding'
-    :param samples: The samples leg, with the same columns
+    :param gallery: The gallery leg's structure, with 'identity', 'video' and 'fold'
+    :param gallery_embeddings: The gallery's embeddings, shape (len(gallery), dim), aligned by row order
+    :param samples: The samples leg's structure, with the same columns
+    :param samples_embeddings: The samples' embeddings, shape (len(samples), dim), aligned by row order
     :param collapse: The gallery-axis reduction
     :param prediction: How a query's observations become one decision
     :param ranks: Which rank-k accuracies to report
@@ -302,8 +307,9 @@ def score_folds(
     totals = {"videos": 0, "observations": 0, "ungalleried": 0, "tied": 0}
 
     for fold in sorted(samples["fold"].unique()):
-        held_out = gallery[gallery["fold"] != fold]
-        queried = samples[samples["fold"] == fold]
+        held_out_rows = (gallery["fold"] != fold).to_numpy()
+        queried_rows = (samples["fold"] == fold).to_numpy()
+        held_out, queried = gallery[held_out_rows], samples[queried_rows]
         if held_out.empty or queried.empty:
             raise ValueError(
                 f"Fold {fold} has an empty gallery ({len(held_out)} rows) or no queries "
@@ -311,7 +317,11 @@ def score_folds(
             )
 
         results, diagnostics = score_fold(
-            Leg.from_frame(held_out), Leg.from_frame(queried), collapse, prediction, ranks
+            Leg.from_frame(held_out, gallery_embeddings[held_out_rows]),
+            Leg.from_frame(queried, samples_embeddings[queried_rows]),
+            collapse,
+            prediction,
+            ranks,
         )
         per_video.append(results.assign(fold=int(fold)))
         for key in totals:

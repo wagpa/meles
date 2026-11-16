@@ -16,6 +16,7 @@ from typing import Any, Protocol
 
 import cv2
 import numpy as np
+import pandas as pd
 from numpy.typing import NDArray
 
 from meles import weights
@@ -50,6 +51,26 @@ class FacialArea:
     h: int
     landmarks: NDArray[np.float32]
     confidence: float
+
+
+def facial_areas(frame: pd.DataFrame) -> list[FacialArea | None]:
+    """
+    Read the faces stored alongside a structure, one per row.
+
+    :param frame: A structure with the columns ``found``, ``x``, ``y``, ``w``, ``h`` and the landmarks
+        ``lx0, ly0, ..., lx4, ly4``
+    :return: The stored face of each row, or None where none was found
+    """
+    landmark_columns = [f"{axis}{point}" for point in range(5) for axis in ("lx", "ly")]
+    found = frame["found"].to_numpy(dtype=bool)
+    boxes = frame[["x", "y", "w", "h"]].to_numpy()
+    landmarks = frame[landmark_columns].to_numpy(dtype=np.float32).reshape(-1, 5, 2)
+    return [
+        FacialArea(x=int(box[0]), y=int(box[1]), w=int(box[2]), h=int(box[3]), landmarks=points, confidence=0.0)
+        if is_found
+        else None
+        for is_found, box, points in zip(found, boxes, landmarks)
+    ]
 
 
 class Detector(Protocol):

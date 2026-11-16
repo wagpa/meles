@@ -22,7 +22,7 @@ from typing import Any
 LEG_DEFAULTS: dict[str, str] = {
     "frame_anonymizer": "none",
     "frame_aggregator": "video_none",
-    "frame_recognizer": "arcface",
+    "frame_recognizer": "oracle_arcface",
     "embedding_aggregator": "video_none",
 }
 SCORE_DEFAULT = "max_none"

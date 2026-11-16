@@ -1,0 +1,203 @@
+from pathlib import Path
+
+from meles.experiment import parse_experiment
+
+configfile: "workflow/config.yaml"
+
+RESULT_PATH = Path(config["result_dir"])
+LOG_PATH = Path(config["log_dir"])
+
+EXPERIMENT = parse_experiment(config["experiment"])
+
+# One condition is a path of four segments, one per axis; a scored pairing joins two of them with a literal '-'.
+CONDITION = "{frame_anonymizer}/{frame_aggregator}/{frame_recognizer}/{embedding_aggregator}"
+GALLERY = "{gallery_frame_anonymizer}/{gallery_frame_aggregator}/{gallery_frame_recognizer}/{gallery_embedding_aggregator}"
+SAMPLES = "{samples_frame_anonymizer}/{samples_frame_aggregator}/{samples_frame_recognizer}/{samples_embedding_aggregator}"
+PAIRING = f"{GALLERY}/-/{SAMPLES}/-/{{score_aggregator}}"
+
+# Every wildcard is one method and so one path segment. Without the constraint Snakemake may read a '/' into any
+# of them and split the score path somewhere other than at the '-' separators.
+wildcard_constraints:
+    frame_anonymizer=r"[^/]+",
+    frame_aggregator=r"[^/]+",
+    frame_recognizer=r"[^/]+",
+    embedding_aggregator=r"[^/]+",
+    gallery_frame_anonymizer=r"[^/]+",
+    gallery_frame_aggregator=r"[^/]+",
+    gallery_frame_recognizer=r"[^/]+",
+    gallery_embedding_aggregator=r"[^/]+",
+    samples_frame_anonymizer=r"[^/]+",
+    samples_frame_aggregator=r"[^/]+",
+    samples_frame_recognizer=r"[^/]+",
+    samples_embedding_aggregator=r"[^/]+",
+    score_aggregator=r"[^/]+",
+
+
+# Selects the frames the experiment runs on: those of the identities in the configured subset, optionally capped to
+# the first N identities. The face found in each clear frame is merged on, because the anonymization and the oracle
+# recognizer both work on that stored face.
+# Input (dataset): identity, video, clip, second, frame, frame_suffix, path
+# Input (areas): path, x, y, w, h, found, lx0, ly0, ..., lx4, ly4
+# Output: identity, video, clip, second, frame, frame_suffix, path, x, y, w, h, found, lx0, ..., ly4
+rule prepare:
+    input:
+        dataset=config["dataset"],
+        splits=config["splits"],
+        areas=config["areas"],
+    output:
+        structure=RESULT_PATH / "prepare/structure.parquet",
+    params:
+        subset=config["subset"],
+        identities=config["identities"],
+    log:
+        LOG_PATH / "prepare.log",
+    script:
+        "scripts/prepare.py"
+
+
+# Assigns a fold (1 to k) to each identity-video. A rule of its own so that changing the folds does not invalidate the
+# expensive anonymization and embedding stages. One row per identity-video, never per frame, so merging it onto a
+# structure does not duplicate rows.
+# Input: identity, video, ...
+# Output: identity, video, fold
+rule split:
+    input:
+        structure=RESULT_PATH / "prepare/structure.parquet",
+    output:
+        structure=RESULT_PATH / "split/structure.parquet",
+    params:
+        k=config["split_k"],
+        seed=config["split_seed"],
+    log:
+        LOG_PATH / "split.log",
+    script:
+        "scripts/split.py"
+
+
+# Anonymizes the face of every frame, using the face stored for the clear frame. A frame without a stored face is
+# left as it is. A method that hands the frame back unchanged ('none') writes no image: its rows point at the original.
+# Input: identity, video, frame, frame_suffix, path, found, x, y, w, h, lx0, ..., ly4, ...
+# Output: the same columns, with path pointing at the anonymized (or original) frame
+rule anonymize_frame:
+    input:
+        structure=RESULT_PATH / "prepare/structure.parquet",
+    output:
+        structure=RESULT_PATH / "anonymize_frame/{frame_anonymizer}/structure.parquet",
+    threads: 4
+    log:
+        LOG_PATH / "anonymize_frame/{frame_anonymizer}.log",
+    script:
+        "scripts/anonymize_frame.py"
+
+
+# Combines the frames of a group at pixel level, before any recognizer has seen them; the counterpart of
+# 'aggregate_embedding' at the other end of the recognizer. '{frame_aggregator}' is '{scope}_{method}'; the scope
+# decides which columns, besides identity and fold, separate groups. The fold is merged in here and kept from now on,
+# so later rules do not read the split again.
+# An aggregator returns either its input unchanged (no images written, rows point at the input frames), one frame per
+# input (a frame-wise method: written under the original names, rows keep all their columns), or fewer frames (new
+# rows with the group columns only, numbered frames and no stored face).
+# Input (structure): identity, video, frame, frame_suffix, path, ...
+# Input (split): identity, video, fold
+# Output: identity, video, fold, frame, frame_suffix, path, ...
+rule aggregate_frame:
+    input:
+        structure=RESULT_PATH / "anonymize_frame/{frame_anonymizer}/structure.parquet",
+        split=RESULT_PATH / "split/structure.parquet",
+    output:
+        structure=RESULT_PATH / "aggregate_frame/{frame_anonymizer}/{frame_aggregator}/structure.parquet",
+    threads: 4
+    log:
+        LOG_PATH / "aggregate_frame/{frame_anonymizer}/{frame_aggregator}.log",
+    script:
+        "scripts/aggregate_frame.py"
+
+
+# Embeds every frame. '{frame_recognizer}' is '{detection}_{model}': with 'oracle' the face stored for the clear frame
+# is used to align, with 'observed' the face is detected in the frame as the recognizer sees it. The embeddings are
+# not a column: they are written to 'embeddings.npy' (float32, one row per row of the structure, same order).
+# Input: identity, video, fold, frame, path, found, x, y, w, h, lx0, ..., ly4, ...
+# Output (structure): the same columns, with path relative to the new structure
+# Output (embeddings): float32 array of shape (rows, dim)
+rule embed_frame:
+    input:
+        structure=RESULT_PATH / "aggregate_frame/{frame_anonymizer}/{frame_aggregator}/structure.parquet",
+    output:
+        structure=RESULT_PATH / "embed_frame/{frame_anonymizer}/{frame_aggregator}/{frame_recognizer}/structure.parquet",
+        embeddings=RESULT_PATH / "embed_frame/{frame_anonymizer}/{frame_aggregator}/{frame_recognizer}/embeddings.npy",
+    threads: 4
+    log:
+        LOG_PATH / "embed_frame/{frame_anonymizer}/{frame_aggregator}/{frame_recognizer}.log",
+    script:
+        "scripts/embed_frame.py"
+
+
+# Combines the embeddings of a group into one or more embeddings; this is where many anonymized observations may
+# reinforce each other. '{embedding_aggregator}' is '{scope}_{method}': 'video_*' groups the frames of one video,
+# 'identity_*' everything a fold holds of one identity (its rows then carry video '*'). Nothing is held out here: every
+# video is aggregated the same way, so one condition can serve as either leg of any pairing.
+# Input: identity, video, fold, ...; embeddings.npy
+# Output (structure): identity, video, fold; (embeddings): float32 array, one row per row of the structure
+rule aggregate_embedding:
+    input:
+        structure=RESULT_PATH / "embed_frame/{frame_anonymizer}/{frame_aggregator}/{frame_recognizer}/structure.parquet",
+        embeddings=RESULT_PATH / "embed_frame/{frame_anonymizer}/{frame_aggregator}/{frame_recognizer}/embeddings.npy",
+    output:
+        structure=RESULT_PATH / f"aggregate_embedding/{CONDITION}/structure.parquet",
+        embeddings=RESULT_PATH / f"aggregate_embedding/{CONDITION}/embeddings.npy",
+    log:
+        LOG_PATH / f"aggregate_embedding/{CONDITION}.log",
+    script:
+        "scripts/aggregate_embedding.py"
+
+
+# Scores one pairing: the gallery leg is what the attacker holds, the samples leg what they observe. Each fold of the
+# samples is queried against a gallery built from the other folds, which also keeps a query video from matching its own
+# differently anonymized copy. '{score_aggregator}' is '{gallery collapse}_{prediction aggregation}'.
+# Input (gallery, samples): identity, video, fold; embeddings.npy
+# Output: identity, video, observations, rank, top-1, top-5, top-10, predicted, fold, gallery_*, samples_*,
+#         score_aggregator
+rule score:
+    input:
+        gallery=RESULT_PATH / f"aggregate_embedding/{GALLERY}/structure.parquet",
+        gallery_embeddings=RESULT_PATH / f"aggregate_embedding/{GALLERY}/embeddings.npy",
+        samples=RESULT_PATH / f"aggregate_embedding/{SAMPLES}/structure.parquet",
+        samples_embeddings=RESULT_PATH / f"aggregate_embedding/{SAMPLES}/embeddings.npy",
+    output:
+        structure=RESULT_PATH / f"score/{PAIRING}/structure.parquet",
+    log:
+        LOG_PATH / f"score/{PAIRING}.log",
+    script:
+        "scripts/score.py"
+
+
+# Gathers every scored pairing into one table: the full cross product of both legs and the score aggregators. A leg
+# pinned to one method contributes one value and does not widen the grid.
+# Input: the score outputs
+# Output: the score columns of all of them
+rule collect:
+    input:
+        scores=expand(
+            RESULT_PATH / f"score/{PAIRING}/structure.parquet",
+            gallery_frame_anonymizer=EXPERIMENT.gallery.frame_anonymizer,
+            gallery_frame_aggregator=EXPERIMENT.gallery.frame_aggregator,
+            gallery_frame_recognizer=EXPERIMENT.gallery.frame_recognizer,
+            gallery_embedding_aggregator=EXPERIMENT.gallery.embedding_aggregator,
+            samples_frame_anonymizer=EXPERIMENT.samples.frame_anonymizer,
+            samples_frame_aggregator=EXPERIMENT.samples.frame_aggregator,
+            samples_frame_recognizer=EXPERIMENT.samples.frame_recognizer,
+            samples_embedding_aggregator=EXPERIMENT.samples.embedding_aggregator,
+            score_aggregator=EXPERIMENT.score_aggregator,
+        ),
+    output:
+        table=RESULT_PATH / f"{EXPERIMENT.name}.parquet",
+    log:
+        LOG_PATH / f"{EXPERIMENT.name}.log",
+    script:
+        "scripts/collect.py"
+
+
+rule all:
+    default_target: True
+    input:
+        table=RESULT_PATH / f"{EXPERIMENT.name}.parquet",
