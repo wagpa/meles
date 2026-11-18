@@ -60,6 +60,7 @@ Run them in order; each one reads the tables the previous ones wrote to `data/`.
 | `06_aggface_training` | Trains AggFace over a curriculum of anonymizations |
 | `07_observation_count` | Measures how recognition changes with the number of observations given to AggFace |
 | `08_observation_diversity` | Compares observations from one clip, one video and several videos |
+| `09_exp_anonymizers_aggface` | Reads the experiment `anonymizers_aggface` that compares aggface against prediction aggregation. |
 
 ## Dataset
 

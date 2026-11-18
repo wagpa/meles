@@ -1,0 +1,4 @@
+# Loaded automatically by Snakemake for this workflow (override with --workflow-profile none).
+# One GPU job at a time: each model-backed job holds its own copy of the model on the device.
+resources:
+  - gpu=1

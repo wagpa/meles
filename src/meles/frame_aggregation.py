@@ -136,13 +136,15 @@ class AggFaceFrameAggregator(FrameAggregator):
 
     aligned = True
 
-    def __init__(self, seed: int = 0, frames: int | None = None) -> None:
+    def __init__(self, seed: int = 0, frames: int | None = None, batch_size: int = 16) -> None:
         """
         :param seed: The seed of the trained checkpoint
         :param frames: How many consecutive frames make one reconstruction, or None for the whole group
+        :param batch_size: How many runs go through the model in one call
         """
         self.seed = seed
         self.frames = frames
+        self.batch_size = batch_size
         self._model: AggFace | None = None
         self._methods: list[str] = []
 
@@ -183,8 +185,11 @@ class AggFaceFrameAggregator(FrameAggregator):
 
         step = self.frames or len(tensors)
         runs = [tensors[start : start + step] for start in range(0, len(tensors), step)]
-        # Runs of equal length go through together; a shorter final run needs a call of its own.
-        batches = [runs] if len({len(run) for run in runs}) == 1 else [[run] for run in runs]
+        # Full runs go through in batches of at most `batch_size`, which bounds device memory however large the
+        # group is; a shorter final run has a different length and needs a call of its own.
+        full = [run for run in runs if len(run) == step]
+        batches = [full[start : start + self.batch_size] for start in range(0, len(full), self.batch_size)]
+        batches += [[run] for run in runs if len(run) != step]
         reconstructions = [
             reconstruct(model, torch.stack([torch.stack(run) for run in batch]), method) for batch in batches
         ]

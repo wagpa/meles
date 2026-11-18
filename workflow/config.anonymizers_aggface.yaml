@@ -36,14 +36,13 @@ experiment:
       - blackbar
     frame_aggregator:
       - video_none
-      - video_aggface
       - video_aggface8
     frame_recognizer: oracle_arcface
     embedding_aggregator: video_none
   gallery:
-    frame_anonymizer: none
-    # Pinned: the clear gallery must not be reconstructed.
-    frame_aggregator: video_none
+    frame_aggregator:
+      - identity_none
+      - identity_aggface8
   score_aggregator:
     - max_none
     - max_mean

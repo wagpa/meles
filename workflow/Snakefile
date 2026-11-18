@@ -108,7 +108,10 @@ rule aggregate_frame:
         split=RESULT_PATH / "split/structure.parquet",
     output:
         structure=RESULT_PATH / "aggregate_frame/{frame_anonymizer}/{frame_aggregator}/structure.parquet",
-    threads: 4
+    threads: 1
+    # Model-backed aggregators load onto the GPU; 'workflow/profiles/default' caps the total so jobs do not share it.
+    resources:
+        gpu=1,
     log:
         LOG_PATH / "aggregate_frame/{frame_anonymizer}/{frame_aggregator}.log",
     script:
@@ -128,6 +131,9 @@ rule embed_frame:
         structure=RESULT_PATH / "embed_frame/{frame_anonymizer}/{frame_aggregator}/{frame_recognizer}/structure.parquet",
         embeddings=RESULT_PATH / "embed_frame/{frame_anonymizer}/{frame_aggregator}/{frame_recognizer}/embeddings.npy",
     threads: 4
+    # ONNX Runtime runs on the GPU when CUDA is available.
+    resources:
+        gpu=1,
     log:
         LOG_PATH / "embed_frame/{frame_anonymizer}/{frame_aggregator}/{frame_recognizer}.log",
     script:
